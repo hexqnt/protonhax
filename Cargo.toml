@@ -1,0 +1,23 @@
+cargo-features = ["profile-rustflags"]
+
+[package]
+name = "protonhax"
+version = "0.9.0"
+edition = "2024"
+authors = ["v_0ver <kvover@gmail.com>"]
+description = "Утилита для запуска программ в среде Proton Steam"
+license = "MIT"
+categories = ["command-line-utilities"]
+keywords = ["games", "steam", "proton"]
+readme = "Readme.md"
+
+[dependencies]
+clap = { version = "4.5.45", features = ["derive"] }
+clap_complete = "4.5.57"
+
+[profile.release]
+strip = "debuginfo"
+lto = true
+codegen-units = 1
+opt-level = 3
+rustflags = ["-Ctarget-cpu=native", "-Ctarget-feature=+avx2,+fma"]
