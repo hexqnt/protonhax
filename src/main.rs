@@ -1,13 +1,16 @@
+#![warn(clippy::pedantic)]
+
 use clap::CommandFactory;
 use clap::{Parser, Subcommand};
 use clap_complete::{generate, shells::Shell as CompleteShell};
-use std::env;
-use std::fs;
-use std::io::{self, Write};
-use std::path::Path;
-use std::path::PathBuf;
-use std::process;
-// Функция для получения пути к директории protonhax.
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process,
+};
+
+/// Функция для получения пути к директории protonhax.
 fn get_phd() -> PathBuf {
     // Получаем XDG_RUNTIME_DIR или fallback на /run/user/<uid>.
     let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| {
@@ -17,12 +20,12 @@ fn get_phd() -> PathBuf {
             .output()
             .expect("Не удалось получить UID");
         let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        format!("/run/user/{}", uid)
+        format!("/run/user/{uid}")
     });
     PathBuf::from(runtime_dir).join("protonhax")
 }
 
-// Вывод справки для конкретной подкоманды.
+/// Вывод справки для конкретной подкоманды.
 fn sub_usage(sub: &str) {
     let mut cmd = Cli::command();
     if let Some(sc) = cmd.find_subcommand_mut(sub) {
@@ -54,22 +57,8 @@ fn is_env_assignment(s: &str) -> bool {
     false
 }
 
-// Функция для экранирования строки в стиле shell для двойных кавычек.
+/// Функция для экранирования строки в стиле shell для двойных кавычек.
 fn shell_escape(s: &str) -> String {
-    // Экранируем специальные символы: \, ", $, `.
-    // let mut res = String::with_capacity(s.len() + 2);
-    // res.push('"');
-    // for c in s.chars() {
-    //     match c {
-    //         '\\' => res.push_str("\\\\"),
-    //         '"' => res.push_str("\\\""),
-    //         '$' => res.push_str("\\$"),
-    //         '`' => res.push_str("\\`"),
-    //         _ => res.push(c),
-    //     }
-    // }
-    // res.push('"');
-    // res
     if s.contains(char::is_whitespace) || s.contains('\'') || s.contains('"') || s.contains('$') {
         let mut res = String::from("\"");
         for c in s.chars() {
@@ -86,7 +75,7 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
-// Функция для деэкранирования строки в стиле shell из двойных кавычек.
+/// Функция для деэкранирования строки в стиле shell из двойных кавычек.
 fn un_shell_escape(s: &str) -> String {
     // Если строка не в кавычках, возвращаем как есть.
     if !s.starts_with('"') || !s.ends_with('"') {
@@ -169,7 +158,8 @@ enum Commands {
 }
 
 fn main() -> io::Result<()> {
-    if debug_enabled() {
+    let debug = debug_enabled();
+    if debug {
         eprintln!(
             "Protonhax started with args: {:?}",
             env::args().collect::<Vec<String>>()
@@ -217,13 +207,12 @@ fn main() -> io::Result<()> {
             let real_cmd = &cmd_tokens[cmd_start_index..];
 
             // Находим путь к proton в аргументах.
-            let proton_path = match real_cmd.iter().find(|a| a.contains("/proton")) {
-                Some(p) => p.clone(),
-                None => {
-                    eprintln!("Путь к proton не найден в команде");
-                    sub_usage("init");
-                    process::exit(1);
-                }
+            let proton_path = if let Some(p) = real_cmd.iter().find(|a| a.contains("/proton")) {
+                p.clone()
+            } else {
+                eprintln!("Путь к proton не найден в команде");
+                sub_usage("init");
+                process::exit(1);
             };
 
             // Сохраняем данные
@@ -232,18 +221,15 @@ fn main() -> io::Result<()> {
             // Сохраняем путь к pfx.
             let compat_data =
                 env::var("STEAM_COMPAT_DATA_PATH").expect("STEAM_COMPAT_DATA_PATH не установлен");
-            let pfx = format!("{}/pfx", compat_data);
+            let pfx = format!("{compat_data}/pfx");
             fs::write(app_dir.join("pfx"), &pfx)?;
 
             // Сохраняем окружение в формате declare -x.
             let env_path = app_dir.join("env");
             let mut env_file = fs::File::create(&env_path)?;
             for (key, value) in env::vars() {
-                // Сохраняем только экспортированные переменные
-                if env::var_os(&key).is_some() {
-                    let escaped_value = shell_escape(&value);
-                    writeln!(env_file, "declare -x {key}={escaped_value}")?;
-                }
+                let escaped_value = shell_escape(&value);
+                writeln!(env_file, "declare -x {key}={escaped_value}")?;
             }
 
             // Выполняем исходную команду, учитывая возможные префиксные VAR=VALUE присваивания.
@@ -261,14 +247,14 @@ fn main() -> io::Result<()> {
                     child.env(k, v);
                 }
             }
-            if debug_enabled() {
-                eprintln!("Executing command (argv): {:?}", real_cmd);
+            if debug {
+                eprintln!("Executing command (argv): {real_cmd:?}");
             }
             let status = child.status()?;
             let exit_code = status.code().unwrap_or(1);
 
             // Удаляем директорию.
-            fs::remove_dir_all(app_dir)?;
+            let _ = fs::remove_dir_all(&app_dir);
 
             process::exit(exit_code);
         }
@@ -369,7 +355,7 @@ fn main() -> io::Result<()> {
 fn load_env<P: AsRef<Path>>(app_dir: P) -> Result<(), io::Error> {
     let app_dir = app_dir.as_ref();
     let env_content = fs::read_to_string(app_dir.join("env"))?;
-    let _: () = for line in env_content.lines() {
+    for line in env_content.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("declare -x ")
             && let Some(eq_idx) = rest.find('=')
@@ -381,7 +367,7 @@ fn load_env<P: AsRef<Path>>(app_dir: P) -> Result<(), io::Error> {
                 env::set_var(name, value);
             }
         }
-    };
+    }
     Ok(())
 }
 fn debug_enabled() -> bool {
