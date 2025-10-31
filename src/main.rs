@@ -3,6 +3,7 @@
 use clap::CommandFactory;
 use clap::{Parser, Subcommand};
 use clap_complete::{generate, shells::Shell as CompleteShell};
+use colored::Colorize;
 use std::{
     env, fs,
     io::{self, Write},
@@ -161,8 +162,13 @@ fn main() -> io::Result<()> {
     let debug = debug_enabled();
     if debug {
         eprintln!(
-            "Protonhax started with args: {:?}",
-            env::args().collect::<Vec<String>>()
+            "{} {}",
+            "DEBUG".bold().cyan(),
+            format!(
+                "Protonhax started with args: {:?}",
+                env::args().collect::<Vec<String>>()
+            )
+            .dimmed()
         );
     }
     let cli = Cli::parse();
@@ -186,7 +192,11 @@ fn main() -> io::Result<()> {
                     match shell_words::split(&cmd[0]) {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("Не удалось разобрать команду: {e}");
+                            eprintln!(
+                                "{} {}",
+                                "Ошибка:".bold().red(),
+                                format!("Не удалось разобрать команду: {e}")
+                            );
                             sub_usage("init");
                             process::exit(1);
                         }
@@ -198,7 +208,11 @@ fn main() -> io::Result<()> {
             // Находим индекс начала настоящей команды (после возможных присваиваний VAR=VALUE)
             let cmd_start_index_opt = cmd_tokens.iter().position(|arg| !is_env_assignment(arg));
             if cmd_start_index_opt.is_none() {
-                eprintln!("Не указана команда для запуска после присваиваний окружения");
+                eprintln!(
+                    "{} {}",
+                    "Ошибка:".bold().red(),
+                    "Не указана команда для запуска после присваиваний окружения"
+                );
                 sub_usage("init");
                 process::exit(1);
             }
@@ -210,7 +224,11 @@ fn main() -> io::Result<()> {
             let proton_path = if let Some(p) = real_cmd.iter().find(|a| a.contains("/proton")) {
                 p.clone()
             } else {
-                eprintln!("Путь к proton не найден в команде");
+                eprintln!(
+                    "{} {}",
+                    "Ошибка:".bold().red(),
+                    "Путь к proton не найден в команде"
+                );
                 sub_usage("init");
                 process::exit(1);
             };
@@ -248,7 +266,11 @@ fn main() -> io::Result<()> {
                 }
             }
             if debug {
-                eprintln!("Executing command (argv): {real_cmd:?}");
+                eprintln!(
+                    "{} {}",
+                    "DEBUG".bold().cyan(),
+                    format!("Executing command (argv): {real_cmd:?}").dimmed()
+                );
             }
             let status = child.status()?;
             let exit_code = status.code().unwrap_or(1);
@@ -263,7 +285,8 @@ fn main() -> io::Result<()> {
                 for entry in fs::read_dir(&phd)? {
                     let entry = entry?;
                     if entry.path().is_dir() {
-                        println!("{}", entry.file_name().to_string_lossy());
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        println!("{}", name.green());
                     }
                 }
             }
@@ -276,7 +299,11 @@ fn main() -> io::Result<()> {
             }
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
+                eprintln!(
+                    "{} {}",
+                    "Ошибка:".bold().red(),
+                    format!("Нет запущенного приложения с appid \"{appid}\"")
+                );
                 process::exit(2);
             }
 
@@ -297,7 +324,11 @@ fn main() -> io::Result<()> {
         Commands::Cmd { appid } => {
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
+                eprintln!(
+                    "{} {}",
+                    "Ошибка:".bold().red(),
+                    format!("Нет запущенного приложения с appid \"{appid}\"")
+                );
                 process::exit(2);
             }
 
@@ -327,7 +358,11 @@ fn main() -> io::Result<()> {
             }
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
+                eprintln!(
+                    "{} {}",
+                    "Ошибка:".bold().red(),
+                    format!("Нет запущенного приложения с appid \"{appid}\"")
+                );
                 process::exit(2);
             }
 
