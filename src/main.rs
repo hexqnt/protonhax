@@ -1,13 +1,12 @@
+use clap::CommandFactory;
+use clap::{Parser, Subcommand};
+use clap_complete::{generate, shells::Shell as CompleteShell};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
-
-use clap::CommandFactory;
-use clap::{Parser, Subcommand};
-use clap_complete::{generate, shells::Shell as CompleteShell};
 // Функция для получения пути к директории protonhax.
 fn get_phd() -> PathBuf {
     // Получаем XDG_RUNTIME_DIR или fallback на /run/user/<uid>.
@@ -23,37 +22,68 @@ fn get_phd() -> PathBuf {
     PathBuf::from(runtime_dir).join("protonhax")
 }
 
-// Функция для вывода справки по использованию.
-fn usage() {
-    println!("Usage:");
-    println!("protonhax init <cmd>");
-    println!("\tShould only be called by Steam with \"protonhax init %COMMAND%\"");
-    println!("protonhax ls");
-    println!("\tLists all currently running games");
-    println!("protonhax run <appid> <cmd>");
-    println!("\tRuns <cmd> in the context of <appid> with proton");
-    println!("protonhax cmd <appid>");
-    println!("\tRuns cmd.exe in the context of <appid>");
-    println!("protonhax exec <appid> <cmd>");
-    println!("\tRuns <cmd> in the context of <appid>");
+// Вывод справки для конкретной подкоманды.
+fn sub_usage(sub: &str) {
+    let mut cmd = Cli::command();
+    if let Some(sc) = cmd.find_subcommand_mut(sub) {
+        let _ = sc.print_help();
+        println!();
+    } else {
+        // Fallback — общая справка
+        let _ = cmd.print_help();
+        println!();
+    }
+}
+
+fn is_env_assignment(s: &str) -> bool {
+    // Detect leading VAR=VALUE shell-style assignment (VAR must match [A-Za-z_][A-Za-z0-9_]*).
+    if let Some(eq) = s.find('=') {
+        let (name, _) = s.split_at(eq);
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+            _ => return false,
+        }
+        for c in chars {
+            if !(c == '_' || c.is_ascii_alphanumeric()) {
+                return false;
+            }
+        }
+        return true;
+    }
+    false
 }
 
 // Функция для экранирования строки в стиле shell для двойных кавычек.
 fn shell_escape(s: &str) -> String {
     // Экранируем специальные символы: \, ", $, `.
-    let mut res = String::with_capacity(s.len() + 2);
-    res.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => res.push_str("\\\\"),
-            '"' => res.push_str("\\\""),
-            '$' => res.push_str("\\$"),
-            '`' => res.push_str("\\`"),
-            _ => res.push(c),
+    // let mut res = String::with_capacity(s.len() + 2);
+    // res.push('"');
+    // for c in s.chars() {
+    //     match c {
+    //         '\\' => res.push_str("\\\\"),
+    //         '"' => res.push_str("\\\""),
+    //         '$' => res.push_str("\\$"),
+    //         '`' => res.push_str("\\`"),
+    //         _ => res.push(c),
+    //     }
+    // }
+    // res.push('"');
+    // res
+    if s.contains(char::is_whitespace) || s.contains('\'') || s.contains('"') || s.contains('$') {
+        let mut res = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '\\' | '"' | '$' | '`' => res.push('\\'),
+                _ => {}
+            }
+            res.push(c);
         }
+        res.push('"');
+        res
+    } else {
+        s.to_string()
     }
-    res.push('"');
-    res
 }
 
 // Функция для деэкранирования строки в стиле shell из двойных кавычек.
@@ -104,7 +134,7 @@ enum Commands {
     /// Should only be called by Steam with "protonhax init %COMMAND%"
     Init {
         /// The command to initialize with (e.g., the original %COMMAND%)
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
     /// Lists all currently running games
@@ -114,7 +144,7 @@ enum Commands {
         /// The appid of the running game
         appid: String,
         /// The command to run with proton
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
     /// Runs cmd.exe in the context of <appid>
@@ -127,7 +157,7 @@ enum Commands {
         /// The appid of the running game
         appid: String,
         /// The command to execute natively
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
     /// Generate shell completion scripts
@@ -139,6 +169,12 @@ enum Commands {
 }
 
 fn main() -> io::Result<()> {
+    if debug_enabled() {
+        eprintln!(
+            "Protonhax started with args: {:?}",
+            env::args().collect::<Vec<String>>()
+        );
+    }
     let cli = Cli::parse();
 
     let phd = get_phd();
@@ -146,7 +182,7 @@ fn main() -> io::Result<()> {
     match cli.command {
         Commands::Init { cmd } => {
             if cmd.is_empty() {
-                usage();
+                sub_usage("init");
                 process::exit(1);
             }
             // Проверяем наличие SteamAppId.
@@ -154,12 +190,43 @@ fn main() -> io::Result<()> {
             let app_dir = phd.join(&appid);
             fs::create_dir_all(&app_dir)?;
 
+            // Steam иногда прокидывает %COMMAND% как одну строку. Разберём её, если это так.
+            let cmd_tokens: Vec<String> =
+                if cmd.len() == 1 && cmd[0].contains(|c: char| c.is_whitespace()) {
+                    match shell_words::split(&cmd[0]) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Не удалось разобрать команду: {e}");
+                            sub_usage("init");
+                            process::exit(1);
+                        }
+                    }
+                } else {
+                    cmd.clone()
+                };
+
+            // Находим индекс начала настоящей команды (после возможных присваиваний VAR=VALUE)
+            let cmd_start_index_opt = cmd_tokens.iter().position(|arg| !is_env_assignment(arg));
+            if cmd_start_index_opt.is_none() {
+                eprintln!("Не указана команда для запуска после присваиваний окружения");
+                sub_usage("init");
+                process::exit(1);
+            }
+            let cmd_start_index = cmd_start_index_opt.unwrap();
+            // Извлекаем настоящую команду (argv)
+            let real_cmd = &cmd_tokens[cmd_start_index..];
+
             // Находим путь к proton в аргументах.
-            let proton_path = cmd
-                .iter()
-                .find(|a| a.contains("/proton"))
-                .expect("Путь к proton не найден")
-                .clone();
+            let proton_path = match real_cmd.iter().find(|a| a.contains("/proton")) {
+                Some(p) => p.clone(),
+                None => {
+                    eprintln!("Путь к proton не найден в команде");
+                    sub_usage("init");
+                    process::exit(1);
+                }
+            };
+
+            // Сохраняем данные
             fs::write(app_dir.join("exe"), &proton_path)?;
 
             // Сохраняем путь к pfx.
@@ -172,13 +239,32 @@ fn main() -> io::Result<()> {
             let env_path = app_dir.join("env");
             let mut env_file = fs::File::create(&env_path)?;
             for (key, value) in env::vars() {
-                let escaped_value = shell_escape(&value);
-                writeln!(env_file, "declare -x {}={}", key, escaped_value)?;
+                // Сохраняем только экспортированные переменные
+                if env::var_os(&key).is_some() {
+                    let escaped_value = shell_escape(&value);
+                    writeln!(env_file, "declare -x {key}={escaped_value}")?;
+                }
             }
 
-            // Запускаем оригинальную команду.
-            let status = process::Command::new(&cmd[0]).args(&cmd[1..]).status()?;
-
+            // Выполняем исходную команду, учитывая возможные префиксные VAR=VALUE присваивания.
+            // Первые аргументы вида KEY=VALUE должны стать переменными окружения дочернего процесса,
+            // а не позиционными аргументами (как делает shell). Это поведение повторяет `exec "$@"` в protonhax.sh
+            // без участия дополнительного парсинга через `sh -c`.
+            let mut child = process::Command::new(&real_cmd[0]);
+            child.args(&real_cmd[1..]);
+            // Применяем присваивания окружения к дочернему процессу.
+            for assign in &cmd_tokens[..cmd_start_index] {
+                if let Some(eq_idx) = assign.find('=') {
+                    let (k, v) = assign.split_at(eq_idx);
+                    // split_at оставляет '=' в начале v, убираем его.
+                    let v = &v[1..];
+                    child.env(k, v);
+                }
+            }
+            if debug_enabled() {
+                eprintln!("Executing command (argv): {:?}", real_cmd);
+            }
+            let status = child.status()?;
             let exit_code = status.code().unwrap_or(1);
 
             // Удаляем директорию.
@@ -199,12 +285,12 @@ fn main() -> io::Result<()> {
         }
         Commands::Run { appid, cmd } => {
             if cmd.is_empty() {
-                usage();
+                sub_usage("run");
                 process::exit(1);
             }
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{}\"", appid);
+                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
                 process::exit(2);
             }
 
@@ -225,7 +311,7 @@ fn main() -> io::Result<()> {
         Commands::Cmd { appid } => {
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{}\"", appid);
+                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
                 process::exit(2);
             }
 
@@ -240,7 +326,7 @@ fn main() -> io::Result<()> {
             // Выполняем cmd.exe.
             let exe = fs::read_to_string(app_dir.join("exe"))?.trim().to_string();
             let pfx = fs::read_to_string(app_dir.join("pfx"))?.trim().to_string();
-            let cmd_exe = format!("{}/drive_c/windows/system32/cmd.exe", pfx);
+            let cmd_exe = format!("{pfx}/drive_c/windows/system32/cmd.exe");
             let status = process::Command::new(exe)
                 .arg("run")
                 .arg(cmd_exe)
@@ -250,12 +336,12 @@ fn main() -> io::Result<()> {
         }
         Commands::Exec { appid, cmd } => {
             if cmd.is_empty() {
-                usage();
+                sub_usage("exec");
                 process::exit(1);
             }
             let app_dir = phd.join(&appid);
             if !app_dir.exists() {
-                eprintln!("Нет запущенного приложения с appid \"{}\"", appid);
+                eprintln!("Нет запущенного приложения с appid \"{appid}\"");
                 process::exit(2);
             }
 
@@ -297,4 +383,7 @@ fn load_env<P: AsRef<Path>>(app_dir: P) -> Result<(), io::Error> {
         }
     };
     Ok(())
+}
+fn debug_enabled() -> bool {
+    env::var_os("PROTONHAX_DEBUG").is_some()
 }

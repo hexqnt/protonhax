@@ -12,12 +12,13 @@ keywords = ["games", "steam", "proton"]
 readme = "Readme.md"
 
 [dependencies]
-clap = { version = "4.5.45", features = ["derive"] }
-clap_complete = "4.5.57"
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+shell-words = "1.1"
 
 [profile.release]
 strip = "debuginfo"
 lto = true
 codegen-units = 1
 opt-level = 3
-rustflags = ["-Ctarget-cpu=native", "-Ctarget-feature=+avx2,+fma"]
+rustflags = ["-Ctarget-cpu=x86-64-v3", "-Ctarget-feature=+avx2,+fma"]
