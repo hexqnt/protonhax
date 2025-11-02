@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process,
 };
+use std::collections::HashMap;
 
 /// Функция для получения пути к директории protonhax.
 fn get_phd() -> PathBuf {
@@ -128,7 +129,11 @@ enum Commands {
         cmd: Vec<String>,
     },
     /// Lists all currently running games
-    Ls,
+    Ls {
+        /// Show extra details (name, install path)
+        #[arg(short = 'l', long = "long")]
+        long: bool,
+    },
     /// Runs <cmd> in the context of <appid> with proton
     Run {
         /// The appid of the running game
@@ -186,6 +191,13 @@ fn main() -> io::Result<()> {
             let app_dir = phd.join(&appid);
             fs::create_dir_all(&app_dir)?;
 
+            // Сохраняем время старта (unix epoch, секунды)
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                .as_secs();
+            fs::write(app_dir.join("started_at"), now.to_string())?;
+
             // Steam иногда прокидывает %COMMAND% как одну строку. Разберём её, если это так.
             let cmd_tokens: Vec<String> =
                 if cmd.len() == 1 && cmd[0].contains(|c: char| c.is_whitespace()) {
@@ -209,9 +221,8 @@ fn main() -> io::Result<()> {
             let cmd_start_index_opt = cmd_tokens.iter().position(|arg| !is_env_assignment(arg));
             if cmd_start_index_opt.is_none() {
                 eprintln!(
-                    "{} {}",
-                    "Ошибка:".bold().red(),
-                    "Не указана команда для запуска после присваиваний окружения"
+                    "{} Не указана команда для запуска после присваиваний окружения",
+                    "Ошибка:".bold().red()
                 );
                 sub_usage("init");
                 process::exit(1);
@@ -225,9 +236,8 @@ fn main() -> io::Result<()> {
                 p.clone()
             } else {
                 eprintln!(
-                    "{} {}",
-                    "Ошибка:".bold().red(),
-                    "Путь к proton не найден в команде"
+                    "{} Путь к proton не найден в команде",
+                    "Ошибка:".bold().red()
                 );
                 sub_usage("init");
                 process::exit(1);
@@ -280,13 +290,70 @@ fn main() -> io::Result<()> {
 
             process::exit(exit_code);
         }
-        Commands::Ls => {
+        Commands::Ls { long } => {
             if phd.exists() {
                 for entry in fs::read_dir(&phd)? {
                     let entry = entry?;
-                    if entry.path().is_dir() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        println!("{}", name.green());
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let appid = entry.file_name().to_string_lossy().to_string();
+                        if !long {
+                            println!("{}", appid.green());
+                            continue;
+                        }
+
+                        let mut extra_name: Option<String> = None;
+                        let mut install_path: Option<String> = None;
+                        let mut started_ago: Option<String> = None;
+
+                        // Try to read env file to locate STEAM_COMPAT_DATA_PATH
+                        let env_path = path.join("env");
+                        if let Ok(env_content) = fs::read_to_string(&env_path) {
+                            let env_map = parse_env_content(&env_content);
+                            if let Some(compat_data) = env_map.get("STEAM_COMPAT_DATA_PATH") {
+                                // compat_data like: /.../steamapps/compatdata/<appid>
+                                let compat_path = Path::new(compat_data);
+                                if let (Some(_parent1), Some(parent2)) =
+                                    (compat_path.parent(), compat_path.parent().and_then(|p| p.parent()))
+                                {
+                                    // parent2 should be .../steamapps
+                                    let steamapps_path = parent2;
+                                    let manifest_path = steamapps_path
+                                        .join(format!("appmanifest_{}.acf", appid));
+                                    if let Ok(manifest) = fs::read_to_string(&manifest_path) {
+                                        if let Some(n) = find_acf_value(&manifest, "name") {
+                                            extra_name = Some(n);
+                                        }
+                                        if let Some(installdir) = find_acf_value(&manifest, "installdir") {
+                                            let common = steamapps_path.join("common").join(&installdir);
+                                            install_path = Some(common.to_string_lossy().to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Read started_at if exists and compute "ago"
+                        let started_path = path.join("started_at");
+                        if let Ok(val) = fs::read_to_string(&started_path) {
+                            if let Ok(secs) = val.trim().parse::<u64>() {
+                                started_ago = Some(format_duration_ago(secs));
+                            }
+                        }
+
+                        // Compose output line
+                        let mut parts: Vec<String> = Vec::new();
+                        parts.push(appid.green().to_string());
+                        if let Some(n) = extra_name {
+                            parts.push(n.yellow().to_string());
+                        }
+                        if let Some(p) = install_path {
+                            parts.push(p.dimmed().to_string());
+                        }
+                        if let Some(ago) = started_ago {
+                            parts.push(format!("started {}", ago).dimmed().to_string());
+                        }
+                        println!("{}", parts.join("  "));
                     }
                 }
             }
@@ -407,4 +474,86 @@ fn load_env<P: AsRef<Path>>(app_dir: P) -> Result<(), io::Error> {
 }
 fn debug_enabled() -> bool {
     env::var_os("PROTONHAX_DEBUG").is_some()
+}
+
+fn parse_env_content(env_content: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in env_content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("declare -x ")
+            && let Some(eq_idx) = rest.find('=')
+        {
+            let name = rest[..eq_idx].trim();
+            let value_str = rest[eq_idx + 1..].trim();
+            let value = un_shell_escape(value_str);
+            map.insert(name.to_string(), value);
+        }
+    }
+    map
+}
+
+fn find_acf_value(content: &str, key: &str) -> Option<String> {
+    for line in content.lines() {
+        let t = line.trim();
+        if !t.starts_with('"') {
+            continue;
+        }
+        let mut tokens: Vec<String> = Vec::new();
+        let mut in_quote = false;
+        let mut cur = String::new();
+        for c in t.chars() {
+            if c == '"' {
+                if in_quote {
+                    tokens.push(cur.clone());
+                    cur.clear();
+                    in_quote = false;
+                } else {
+                    in_quote = true;
+                }
+            } else if in_quote {
+                cur.push(c);
+            }
+        }
+        if tokens.len() >= 2 && tokens[0] == key {
+            return Some(tokens[1].clone());
+        }
+    }
+    None
+}
+
+fn format_duration_ago(start_unix_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .as_secs();
+    let mut secs = now.saturating_sub(start_unix_secs);
+
+    let days = secs / 86_400;
+    secs %= 86_400;
+    let hours = secs / 3_600;
+    secs %= 3_600;
+    let mins = secs / 60;
+    let s = secs % 60;
+
+    if days > 0 {
+        if hours > 0 {
+            format!("{}d {}h ago", days, hours)
+        } else {
+            format!("{}d ago", days)
+        }
+    } else if hours > 0 {
+        if mins > 0 {
+            format!("{}h {}m ago", hours, mins)
+        } else {
+            format!("{}h ago", hours)
+        }
+    } else if mins > 0 {
+        if s > 0 {
+            format!("{}m {}s ago", mins, s)
+        } else {
+            format!("{}m ago", mins)
+        }
+    } else {
+        format!("{}s ago", s)
+    }
 }
