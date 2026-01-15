@@ -4,13 +4,13 @@ use clap::CommandFactory;
 use clap::{Parser, Subcommand};
 use clap_complete::{generate, shells::Shell as CompleteShell};
 use colored::Colorize;
+use rustc_hash::FxHashMap;
 use std::{
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process,
 };
-use std::collections::HashMap;
 
 /// Функция для получения пути к директории protonhax.
 fn get_phd() -> PathBuf {
@@ -313,20 +313,25 @@ fn main() -> io::Result<()> {
                             if let Some(compat_data) = env_map.get("STEAM_COMPAT_DATA_PATH") {
                                 // compat_data like: /.../steamapps/compatdata/<appid>
                                 let compat_path = Path::new(compat_data);
-                                if let (Some(_parent1), Some(parent2)) =
-                                    (compat_path.parent(), compat_path.parent().and_then(|p| p.parent()))
-                                {
+                                if let (Some(_parent1), Some(parent2)) = (
+                                    compat_path.parent(),
+                                    compat_path.parent().and_then(|p| p.parent()),
+                                ) {
                                     // parent2 should be .../steamapps
                                     let steamapps_path = parent2;
-                                    let manifest_path = steamapps_path
-                                        .join(format!("appmanifest_{}.acf", appid));
+                                    let manifest_path =
+                                        steamapps_path.join(format!("appmanifest_{appid}.acf"));
                                     if let Ok(manifest) = fs::read_to_string(&manifest_path) {
                                         if let Some(n) = find_acf_value(&manifest, "name") {
                                             extra_name = Some(n);
                                         }
-                                        if let Some(installdir) = find_acf_value(&manifest, "installdir") {
-                                            let common = steamapps_path.join("common").join(&installdir);
-                                            install_path = Some(common.to_string_lossy().to_string());
+                                        if let Some(installdir) =
+                                            find_acf_value(&manifest, "installdir")
+                                        {
+                                            let common =
+                                                steamapps_path.join("common").join(&installdir);
+                                            install_path =
+                                                Some(common.to_string_lossy().to_string());
                                         }
                                     }
                                 }
@@ -335,10 +340,10 @@ fn main() -> io::Result<()> {
 
                         // Read started_at if exists and compute "ago"
                         let started_path = path.join("started_at");
-                        if let Ok(val) = fs::read_to_string(&started_path) {
-                            if let Ok(secs) = val.trim().parse::<u64>() {
-                                started_ago = Some(format_duration_ago(secs));
-                            }
+                        if let Ok(val) = fs::read_to_string(&started_path)
+                            && let Ok(secs) = val.trim().parse::<u64>()
+                        {
+                            started_ago = Some(format_duration_ago(secs));
                         }
 
                         // Compose output line
@@ -351,7 +356,7 @@ fn main() -> io::Result<()> {
                             parts.push(p.dimmed().to_string());
                         }
                         if let Some(ago) = started_ago {
-                            parts.push(format!("started {}", ago).dimmed().to_string());
+                            parts.push(format!("started {ago}").dimmed().to_string());
                         }
                         println!("{}", parts.join("  "));
                     }
@@ -476,8 +481,8 @@ fn debug_enabled() -> bool {
     env::var_os("PROTONHAX_DEBUG").is_some()
 }
 
-fn parse_env_content(env_content: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+fn parse_env_content(env_content: &str) -> FxHashMap<String, String> {
+    let mut map = FxHashMap::default();
     for line in env_content.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("declare -x ")
@@ -537,23 +542,23 @@ fn format_duration_ago(start_unix_secs: u64) -> String {
 
     if days > 0 {
         if hours > 0 {
-            format!("{}d {}h ago", days, hours)
+            format!("{days}d {hours}h ago")
         } else {
-            format!("{}d ago", days)
+            format!("{days}d ago")
         }
     } else if hours > 0 {
         if mins > 0 {
-            format!("{}h {}m ago", hours, mins)
+            format!("{hours}h {mins}m ago")
         } else {
-            format!("{}h ago", hours)
+            format!("{hours}h ago")
         }
     } else if mins > 0 {
         if s > 0 {
-            format!("{}m {}s ago", mins, s)
+            format!("{mins}m {s}s ago")
         } else {
-            format!("{}m ago", mins)
+            format!("{mins}m ago")
         }
     } else {
-        format!("{}s ago", s)
+        format!("{s}s ago")
     }
 }
