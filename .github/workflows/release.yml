@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -23,10 +26,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
+      # :contentReference[oaicite:0]{index=0}
+
+      - name: Debug Rust toolchain / targets
+        run: |
+          which rustc
+          which cargo
+          rustc -vV
+          rustup show
+          rustup target list --installed
+
+      - name: Ensure target installed
+        run: rustup target add ${{ matrix.target }}
       # :contentReference[oaicite:1]{index=1}
 
       - name: Rust cache
@@ -48,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           BIN="protonhax"
-          VERSION="${GITHUB_REF_NAME}"               # например v0.9.2
+          VERSION="${GITHUB_REF_NAME}"       # например v0.9.2
           TARGET="${{ matrix.target }}"
 
           STAGE="dist/${BIN}-${VERSION}-${TARGET}"
@@ -57,7 +73,7 @@ jobs:
           cp "target/${TARGET}/release/${BIN}" "${STAGE}/bin/${BIN}"
           chmod +x "${STAGE}/bin/${BIN}"
 
-          # Генерация автодополнений (у вас есть команда `completions <shell>` в README)
+          # completions (как в README проекта)
           "${STAGE}/bin/${BIN}" completions bash > "${STAGE}/completions/${BIN}.bash"
           "${STAGE}/bin/${BIN}" completions zsh  > "${STAGE}/completions/_${BIN}"
           "${STAGE}/bin/${BIN}" completions fish > "${STAGE}/completions/${BIN}.fish"
@@ -92,14 +108,17 @@ jobs:
           set -euo pipefail
           mkdir -p upload
           find artifacts -type f -name "*.tar.gz" -exec cp -v {} upload/ \;
-          # SHA256SUMS будет дублироваться из каждой матрицы — склеим в один:
+          # объединяем SHA256SUMS из матрицы в один файл
           find artifacts -type f -name "SHA256SUMS" -exec cat {} \; | sort -u > upload/SHA256SUMS
           ls -la upload
 
       - name: Create Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             upload/*.tar.gz
             upload/SHA256SUMS
-          generate_release_notes: true
+      # :contentReference[oaicite:3]{index=3}
