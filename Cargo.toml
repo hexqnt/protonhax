@@ -15,7 +15,8 @@ readme = "Readme.md"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 shell-words = "1.1"
-colored = "3.0"
+colored = "3.1"
+serde_json = "1.0"
 
 [profile.release]
 strip = "debuginfo"

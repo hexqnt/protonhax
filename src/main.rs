@@ -30,10 +30,11 @@ fn main() -> io::Result<()> {
 
     match cli.command {
         Commands::Init { cmd } => handlers::handle_init(&phd, cmd, debug),
-        Commands::Ls { long } => handlers::handle_ls(&phd, long),
+        Commands::Ls { long, json } => handlers::handle_ls(&phd, long, json),
         Commands::Run { appid, cmd } => handlers::handle_run(&phd, &appid, &cmd),
         Commands::Cmd { appid } => handlers::handle_cmd(&phd, &appid),
         Commands::Exec { appid, cmd } => handlers::handle_exec(&phd, &appid, &cmd),
+        Commands::Doctor => handlers::handle_doctor(&phd),
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "protonhax", &mut io::stdout());

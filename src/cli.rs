@@ -25,23 +25,26 @@ pub enum Commands {
         /// Show extra details (name, install path)
         #[arg(short = 'l', long = "long")]
         long: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
-    /// Runs <cmd> in the context of <appid> with proton
+    /// Runs <cmd> in the context of <target> with proton
     Run {
-        /// The appid of the running game
+        /// Target game: appid, `latest`, or part of game name
         appid: String,
         /// The command to run with proton
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
-    /// Runs cmd.exe in the context of <appid>
+    /// Runs cmd.exe in the context of <target>
     Cmd {
-        /// The appid of the running game
+        /// Target game: appid, `latest`, or part of game name
         appid: String,
     },
-    /// Runs <cmd> in the context of <appid>
+    /// Runs <cmd> in the context of <target>
     Exec {
-        /// The appid of the running game
+        /// Target game: appid, `latest`, or part of game name
         appid: String,
         /// The command to execute natively
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -53,6 +56,8 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: CompleteShell,
     },
+    /// Validate current runtime contexts and environment
+    Doctor,
 }
 
 /// Вывод справки для конкретной подкоманды.
