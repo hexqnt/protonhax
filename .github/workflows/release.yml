@@ -31,7 +31,6 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      # :contentReference[oaicite:0]{index=0}
 
       - name: Debug Rust toolchain / targets
         run: |
@@ -43,11 +42,9 @@ jobs:
 
       - name: Ensure target installed
         run: rustup target add ${{ matrix.target }}
-      # :contentReference[oaicite:1]{index=1}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
-      # :contentReference[oaicite:2]{index=2}
 
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -64,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           BIN="protonhax"
-          VERSION="${GITHUB_REF_NAME}"       # например v0.9.2
+          VERSION="${GITHUB_REF_NAME}"
           TARGET="${{ matrix.target }}"
 
           STAGE="dist/${BIN}-${VERSION}-${TARGET}"
@@ -81,15 +78,12 @@ jobs:
 
           tar -C dist -czf "${STAGE}.tar.gz" "$(basename "${STAGE}")"
 
-          (cd dist && sha256sum "$(basename "${STAGE}.tar.gz")" >> SHA256SUMS)
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.target }}
           path: |
             dist/*.tar.gz
-            dist/SHA256SUMS
 
   release:
     name: Publish GitHub Release
@@ -108,8 +102,6 @@ jobs:
           set -euo pipefail
           mkdir -p upload
           find artifacts -type f -name "*.tar.gz" -exec cp -v {} upload/ \;
-          # объединяем SHA256SUMS из матрицы в один файл
-          find artifacts -type f -name "SHA256SUMS" -exec cat {} \; | sort -u > upload/SHA256SUMS
           ls -la upload
 
       - name: Create Release and upload assets
@@ -120,5 +112,3 @@ jobs:
           generate_release_notes: true
           files: |
             upload/*.tar.gz
-            upload/SHA256SUMS
-      # :contentReference[oaicite:3]{index=3}
