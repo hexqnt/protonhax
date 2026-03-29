@@ -30,11 +30,10 @@ struct TargetApp {
 
 pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> {
     if cmd.is_empty() {
-        sub_usage("init");
-        process::exit(1);
+        print_subcommand_usage_error("init", "Не указана команда для запуска");
     }
 
-    let appid = env::var("SteamAppId").expect("SteamAppId не установлен");
+    let appid = required_env_var("SteamAppId", "init");
     let app_dir = phd.join(&appid);
     fs::create_dir_all(&app_dir)?;
 
@@ -46,12 +45,7 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
         match shell_words::split(&cmd[0]) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
-                    "{} Не удалось разобрать команду: {e}",
-                    "Ошибка:".bold().red()
-                );
-                sub_usage("init");
-                process::exit(1);
+                print_subcommand_usage_error("init", &format!("Не удалось разобрать команду: {e}"));
             }
         }
     } else {
@@ -60,32 +54,24 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
 
     // Находим индекс начала настоящей команды (после возможных присваиваний VAR=VALUE).
     let Some(cmd_start_index) = cmd_tokens.iter().position(|arg| !is_env_assignment(arg)) else {
-        eprintln!(
-            "{} Не указана команда для запуска после присваиваний окружения",
-            "Ошибка:".bold().red()
+        print_subcommand_usage_error(
+            "init",
+            "Не указана команда для запуска после присваиваний окружения",
         );
-        sub_usage("init");
-        process::exit(1);
     };
 
     let real_cmd = &cmd_tokens[cmd_start_index..];
 
     // Находим путь к proton в аргументах.
     let Some(proton_path) = real_cmd.iter().find(|arg| arg.contains("/proton")) else {
-        eprintln!(
-            "{} Путь к proton не найден в команде",
-            "Ошибка:".bold().red()
-        );
-        sub_usage("init");
-        process::exit(1);
+        print_subcommand_usage_error("init", "Путь к proton не найден в команде");
     };
 
     // Сохраняем данные.
     fs::write(app_dir.join("exe"), proton_path)?;
 
     // Сохраняем путь к pfx.
-    let compat_data =
-        env::var("STEAM_COMPAT_DATA_PATH").expect("STEAM_COMPAT_DATA_PATH не установлен");
+    let compat_data = required_env_var("STEAM_COMPAT_DATA_PATH", "init");
     fs::write(app_dir.join("pfx"), format!("{compat_data}/pfx"))?;
 
     // Сохраняем окружение в формате declare -x.
@@ -109,11 +95,10 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
     }
 
     let status = child.status()?;
-    let exit_code = status.code().unwrap_or(1);
 
     // Удаляем директорию.
     let _ = fs::remove_dir_all(&app_dir);
-    process::exit(exit_code);
+    exit_with_status(status);
 }
 
 pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
@@ -154,15 +139,13 @@ pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
 
 pub fn handle_run(phd: &Path, appid: &str, cmd: &[String]) -> io::Result<()> {
     if cmd.is_empty() {
-        sub_usage("run");
-        process::exit(1);
+        print_subcommand_usage_error("run", "Не указана команда для запуска");
     }
 
     let target = prepare_context(phd, appid)?;
     let exe = read_trimmed(target.app_dir.join("exe"))?;
     let status = process::Command::new(exe).arg("run").args(cmd).status()?;
-
-    process::exit(status.code().unwrap_or(1));
+    exit_with_status(status);
 }
 
 pub fn handle_cmd(phd: &Path, appid: &str) -> io::Result<()> {
@@ -175,19 +158,17 @@ pub fn handle_cmd(phd: &Path, appid: &str) -> io::Result<()> {
         .arg("run")
         .arg(cmd_exe)
         .status()?;
-
-    process::exit(status.code().unwrap_or(1));
+    exit_with_status(status);
 }
 
 pub fn handle_exec(phd: &Path, appid: &str, cmd: &[String]) -> io::Result<()> {
     if cmd.is_empty() {
-        sub_usage("exec");
-        process::exit(1);
+        print_subcommand_usage_error("exec", "Не указана команда для запуска");
     }
 
-    let _target = prepare_context(phd, appid)?;
+    let _ = prepare_context(phd, appid)?;
     let status = process::Command::new(&cmd[0]).args(&cmd[1..]).status()?;
-    process::exit(status.code().unwrap_or(1));
+    exit_with_status(status);
 }
 
 pub fn handle_doctor(phd: &Path) -> io::Result<()> {
@@ -376,13 +357,14 @@ fn collect_running_apps(phd: &Path, with_meta: bool) -> io::Result<Vec<RunningAp
         } else {
             AppMeta::default()
         };
+        let started_at = read_started_at(&path);
 
         apps.push(RunningApp {
             appid,
-            path: path.clone(),
+            path,
             name: meta.name,
             install_path: meta.install_path,
-            started_at: read_started_at(&path),
+            started_at,
         });
     }
 
@@ -492,8 +474,10 @@ fn doctor_info(message: &str) {
 fn write_env_file(app_dir: &Path) -> io::Result<()> {
     let env_path = app_dir.join("env");
     let mut env_file = fs::File::create(env_path)?;
+    let mut vars: Vec<_> = env::vars().collect();
+    vars.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
-    for (key, value) in env::vars() {
+    for (key, value) in vars {
         let escaped_value = shell_escape(&value);
         writeln!(env_file, "declare -x {key}={escaped_value}")?;
     }
@@ -512,6 +496,23 @@ fn read_started_at(app_dir: &Path) -> Option<u64> {
 
 fn contains_case_insensitive(text: &str, query: &str) -> bool {
     text.to_lowercase().contains(&query.to_lowercase())
+}
+
+fn required_env_var(name: &str, command: &str) -> String {
+    match env::var(name) {
+        Ok(value) => value,
+        Err(_) => print_subcommand_usage_error(command, &format!("{name} не установлен")),
+    }
+}
+
+fn print_subcommand_usage_error(subcommand: &str, message: &str) -> ! {
+    eprintln!("{} {message}", "Ошибка:".bold().red());
+    sub_usage(subcommand);
+    process::exit(1);
+}
+
+fn exit_with_status(status: process::ExitStatus) -> ! {
+    process::exit(status.code().unwrap_or(1));
 }
 
 #[cfg(test)]

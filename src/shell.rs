@@ -24,6 +24,7 @@ pub fn shell_escape(s: &str) -> String {
         || s.contains('\\')
         || s.contains('"')
         || s.contains('$')
+        || s.contains('`')
     {
         let mut res = String::from("\"");
         for c in s.chars() {
@@ -92,5 +93,12 @@ mod tests {
         let original = r#" a b$c\"` "#;
         let escaped = shell_escape(original);
         assert_eq!(un_shell_escape(&escaped), original);
+    }
+
+    #[test]
+    fn backtick_is_escaped() {
+        let escaped = shell_escape("`uname`");
+        assert_eq!(escaped, "\"\\`uname\\`\"");
+        assert_eq!(un_shell_escape(&escaped), "`uname`");
     }
 }

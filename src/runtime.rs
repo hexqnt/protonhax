@@ -7,12 +7,15 @@ use std::{
 
 /// Функция для получения пути к директории protonhax.
 pub fn runtime_root() -> PathBuf {
-    PathBuf::from(runtime_dir()).join("protonhax")
+    runtime_dir().join("protonhax")
 }
 
-fn runtime_dir() -> String {
+fn runtime_dir() -> PathBuf {
     // Получаем XDG_RUNTIME_DIR или fallback на /run/user/<uid>.
-    env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", current_uid()))
+    env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", current_uid())),
+        PathBuf::from,
+    )
 }
 
 fn current_uid() -> String {
@@ -26,12 +29,7 @@ fn current_uid() -> String {
         return uid;
     }
 
-    // Фолбэк: получаем UID через команду id -u.
-    let output = process::Command::new("id")
-        .arg("-u")
-        .output()
-        .expect("Не удалось получить UID");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    uid_from_id_command().unwrap_or_else(|| String::from("0"))
 }
 
 fn uid_from_proc_status() -> Option<String> {
@@ -40,6 +38,20 @@ fn uid_from_proc_status() -> Option<String> {
     let uid = uid_line.split_whitespace().nth(1)?;
     if uid.chars().all(|c| c.is_ascii_digit()) {
         Some(uid.to_string())
+    } else {
+        None
+    }
+}
+
+fn uid_from_id_command() -> Option<String> {
+    let output = process::Command::new("id").arg("-u").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if uid.chars().all(|c| c.is_ascii_digit()) {
+        Some(uid)
     } else {
         None
     }
