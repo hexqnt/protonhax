@@ -5,6 +5,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+const SECS_PER_MINUTE: u64 = 60;
+const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
+const SECS_PER_DAY: u64 = 24 * SECS_PER_HOUR;
+
 /// Функция для получения пути к директории protonhax.
 pub fn runtime_root() -> PathBuf {
     runtime_dir().join("protonhax")
@@ -20,7 +24,7 @@ fn runtime_dir() -> PathBuf {
 
 fn current_uid() -> String {
     if let Ok(uid) = env::var("UID")
-        && uid.chars().all(|c| c.is_ascii_digit())
+        && is_uid(&uid)
     {
         return uid;
     }
@@ -36,7 +40,7 @@ fn uid_from_proc_status() -> Option<String> {
     let content = fs::read_to_string("/proc/self/status").ok()?;
     let uid_line = content.lines().find(|line| line.starts_with("Uid:"))?;
     let uid = uid_line.split_whitespace().nth(1)?;
-    if uid.chars().all(|c| c.is_ascii_digit()) {
+    if is_uid(uid) {
         Some(uid.to_string())
     } else {
         None
@@ -50,11 +54,11 @@ fn uid_from_id_command() -> Option<String> {
     }
 
     let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if uid.chars().all(|c| c.is_ascii_digit()) {
-        Some(uid)
-    } else {
-        None
-    }
+    is_uid(&uid).then_some(uid)
+}
+
+fn is_uid(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 pub fn debug_enabled() -> bool {
@@ -71,12 +75,12 @@ pub fn unix_now_secs() -> u64 {
 pub fn format_duration_ago(start_unix_secs: u64) -> String {
     let mut secs = unix_now_secs().saturating_sub(start_unix_secs);
 
-    let days = secs / 86_400;
-    secs %= 86_400;
-    let hours = secs / 3_600;
-    secs %= 3_600;
-    let mins = secs / 60;
-    let s = secs % 60;
+    let days = secs / SECS_PER_DAY;
+    secs %= SECS_PER_DAY;
+    let hours = secs / SECS_PER_HOUR;
+    secs %= SECS_PER_HOUR;
+    let mins = secs / SECS_PER_MINUTE;
+    let s = secs % SECS_PER_MINUTE;
 
     if days > 0 {
         if hours > 0 {

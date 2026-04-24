@@ -9,11 +9,18 @@ use std::{
 
 use crate::{
     cli::sub_usage,
-    env_store::{get_env_var, load_env, set_env_var},
+    env_store::{ENV_FILE, get_env_var, load_env, set_env_var},
     runtime::{format_duration_ago, unix_now_secs},
-    shell::{is_env_assignment, shell_escape},
+    shell::{is_env_assignment, shell_escape, split_env_assignment},
     steam::{AppMeta, resolve_app_meta},
 };
+
+const EXE_FILE: &str = "exe";
+const PFX_FILE: &str = "pfx";
+const STARTED_AT_FILE: &str = "started_at";
+const STEAM_APP_ID_ENV: &str = "SteamAppId";
+const STEAM_COMPAT_DATA_PATH_ENV: &str = "STEAM_COMPAT_DATA_PATH";
+const LATEST_SELECTOR: &str = "latest";
 
 struct RunningApp {
     appid: String,
@@ -28,51 +35,46 @@ struct TargetApp {
     app_dir: PathBuf,
 }
 
+struct InitCommand {
+    tokens: Vec<String>,
+    cmd_start_index: usize,
+}
+
+impl InitCommand {
+    fn command(&self) -> &[String] {
+        &self.tokens[self.cmd_start_index..]
+    }
+
+    fn env_assignments(&self) -> &[String] {
+        &self.tokens[..self.cmd_start_index]
+    }
+}
+
 pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> {
     if cmd.is_empty() {
         print_subcommand_usage_error("init", "Не указана команда для запуска");
     }
 
-    let appid = required_env_var("SteamAppId", "init");
+    let appid = required_env_var(STEAM_APP_ID_ENV, "init");
     let app_dir = phd.join(&appid);
     fs::create_dir_all(&app_dir)?;
 
     // Сохраняем время старта (unix epoch, секунды).
-    fs::write(app_dir.join("started_at"), unix_now_secs().to_string())?;
+    fs::write(app_dir.join(STARTED_AT_FILE), unix_now_secs().to_string())?;
 
-    // Steam иногда прокидывает %COMMAND% как одну строку. Разберём её, если это так.
-    let cmd_tokens = if cmd.len() == 1 && cmd[0].contains(char::is_whitespace) {
-        match shell_words::split(&cmd[0]) {
-            Ok(v) => v,
-            Err(e) => {
-                print_subcommand_usage_error("init", &format!("Не удалось разобрать команду: {e}"));
-            }
-        }
-    } else {
-        cmd
-    };
-
-    // Находим индекс начала настоящей команды (после возможных присваиваний VAR=VALUE).
-    let Some(cmd_start_index) = cmd_tokens.iter().position(|arg| !is_env_assignment(arg)) else {
-        print_subcommand_usage_error(
-            "init",
-            "Не указана команда для запуска после присваиваний окружения",
-        );
-    };
-
-    let real_cmd = &cmd_tokens[cmd_start_index..];
-
+    let init_command = parse_init_command(cmd);
+    let real_cmd = init_command.command();
     // Находим путь к proton в аргументах.
     let Some(proton_path) = real_cmd.iter().find(|arg| arg.contains("/proton")) else {
         print_subcommand_usage_error("init", "Путь к proton не найден в команде");
     };
 
     // Сохраняем данные.
-    fs::write(app_dir.join("exe"), proton_path)?;
+    fs::write(app_dir.join(EXE_FILE), proton_path)?;
 
     // Сохраняем путь к pfx.
-    let compat_data = required_env_var("STEAM_COMPAT_DATA_PATH", "init");
-    fs::write(app_dir.join("pfx"), format!("{compat_data}/pfx"))?;
+    let compat_data = required_env_var(STEAM_COMPAT_DATA_PATH_ENV, "init");
+    fs::write(app_dir.join(PFX_FILE), format!("{compat_data}/pfx"))?;
 
     // Сохраняем окружение в формате declare -x.
     write_env_file(&app_dir)?;
@@ -81,10 +83,11 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
     let mut child = process::Command::new(&real_cmd[0]);
     child.args(&real_cmd[1..]);
 
-    for assign in &cmd_tokens[..cmd_start_index] {
-        if let Some((name, value)) = assign.split_once('=') {
-            child.env(name, value);
-        }
+    for assign in init_command.env_assignments() {
+        let Some((name, value)) = split_env_assignment(assign) else {
+            continue;
+        };
+        child.env(name, value);
     }
 
     if debug {
@@ -143,15 +146,15 @@ pub fn handle_run(phd: &Path, appid: &str, cmd: &[String]) -> io::Result<()> {
     }
 
     let target = prepare_context(phd, appid)?;
-    let exe = read_trimmed(target.app_dir.join("exe"))?;
+    let exe = read_trimmed(target.app_dir.join(EXE_FILE))?;
     let status = process::Command::new(exe).arg("run").args(cmd).status()?;
     exit_with_status(status);
 }
 
 pub fn handle_cmd(phd: &Path, appid: &str) -> io::Result<()> {
     let target = prepare_context(phd, appid)?;
-    let exe = read_trimmed(target.app_dir.join("exe"))?;
-    let pfx = read_trimmed(target.app_dir.join("pfx"))?;
+    let exe = read_trimmed(target.app_dir.join(EXE_FILE))?;
+    let pfx = read_trimmed(target.app_dir.join(PFX_FILE))?;
     let cmd_exe = format!("{pfx}/drive_c/windows/system32/cmd.exe");
 
     let status = process::Command::new(exe)
@@ -178,20 +181,20 @@ pub fn handle_doctor(phd: &Path) -> io::Result<()> {
     println!("{}", "protonhax doctor".bold());
 
     println!("\nEnvironment:");
-    if let Ok(steam_app_id) = env::var("SteamAppId") {
-        doctor_ok(&format!("SteamAppId={steam_app_id}"));
+    if let Ok(steam_app_id) = env::var(STEAM_APP_ID_ENV) {
+        doctor_ok(&format!("{STEAM_APP_ID_ENV}={steam_app_id}"));
     } else {
         doctor_info("SteamAppId не установлен (это нормально вне запуска через Steam)");
     }
 
-    match env::var("STEAM_COMPAT_DATA_PATH") {
+    match env::var(STEAM_COMPAT_DATA_PATH_ENV) {
         Ok(path) => {
             if Path::new(&path).exists() {
-                doctor_ok(&format!("STEAM_COMPAT_DATA_PATH={path}"));
+                doctor_ok(&format!("{STEAM_COMPAT_DATA_PATH_ENV}={path}"));
             } else {
                 warnings += 1;
                 doctor_warn(&format!(
-                    "STEAM_COMPAT_DATA_PATH установлен, но путь не найден: {path}"
+                    "{STEAM_COMPAT_DATA_PATH_ENV} установлен, но путь не найден: {path}"
                 ));
             }
         }
@@ -235,15 +238,38 @@ pub fn handle_doctor(phd: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn parse_init_command(cmd: Vec<String>) -> InitCommand {
+    // Steam иногда прокидывает %COMMAND% одной shell-строкой.
+    let tokens = if cmd.len() == 1 && cmd[0].contains(char::is_whitespace) {
+        shell_words::split(&cmd[0]).unwrap_or_else(|err| {
+            print_subcommand_usage_error("init", &format!("Не удалось разобрать команду: {err}"));
+        })
+    } else {
+        cmd
+    };
+
+    let Some(cmd_start_index) = tokens.iter().position(|arg| !is_env_assignment(arg)) else {
+        print_subcommand_usage_error(
+            "init",
+            "Не указана команда для запуска после присваиваний окружения",
+        );
+    };
+
+    InitCommand {
+        tokens,
+        cmd_start_index,
+    }
+}
+
 fn prepare_context(phd: &Path, selector: &str) -> io::Result<TargetApp> {
     let target = resolve_target_app(phd, selector)?;
-    set_env_var("SteamAppId", &target.appid);
+    set_env_var(STEAM_APP_ID_ENV, &target.appid);
     load_env(&target.app_dir)?;
     Ok(target)
 }
 
 fn resolve_target_app(phd: &Path, selector: &str) -> io::Result<TargetApp> {
-    if selector.eq_ignore_ascii_case("latest") {
+    if selector.eq_ignore_ascii_case(LATEST_SELECTOR) {
         return resolve_latest_app(phd);
     }
 
@@ -398,7 +424,7 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
     };
     println!("  {} {}", "•".cyan().bold(), title);
 
-    if let Ok(exe) = read_trimmed(app.path.join("exe")) {
+    if let Ok(exe) = read_trimmed(app.path.join(EXE_FILE)) {
         if Path::new(&exe).exists() {
             doctor_ok(&format!("exe: {exe}"));
         } else {
@@ -410,7 +436,7 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
         doctor_err("файл exe отсутствует или не читается");
     }
 
-    if let Ok(pfx) = read_trimmed(app.path.join("pfx")) {
+    if let Ok(pfx) = read_trimmed(app.path.join(PFX_FILE)) {
         if Path::new(&pfx).exists() {
             doctor_ok(&format!("pfx: {pfx}"));
         } else {
@@ -422,9 +448,9 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
         doctor_warn("файл pfx отсутствует или не читается");
     }
 
-    if let Ok(env_content) = fs::read_to_string(app.path.join("env")) {
+    if let Ok(env_content) = fs::read_to_string(app.path.join(ENV_FILE)) {
         doctor_ok("env: файл окружения прочитан");
-        match get_env_var(&env_content, "STEAM_COMPAT_DATA_PATH") {
+        match get_env_var(&env_content, STEAM_COMPAT_DATA_PATH_ENV) {
             Some(compat_data) if Path::new(&compat_data).exists() => {
                 doctor_ok(&format!("env.STEAM_COMPAT_DATA_PATH: {compat_data}"));
             }
@@ -472,7 +498,7 @@ fn doctor_info(message: &str) {
 }
 
 fn write_env_file(app_dir: &Path) -> io::Result<()> {
-    let env_path = app_dir.join("env");
+    let env_path = app_dir.join(ENV_FILE);
     let mut env_file = fs::File::create(env_path)?;
     let mut vars: Vec<_> = env::vars().collect();
     vars.sort_unstable_by(|left, right| left.0.cmp(&right.0));
@@ -490,12 +516,23 @@ fn read_trimmed<P: AsRef<Path>>(path: P) -> io::Result<String> {
 }
 
 fn read_started_at(app_dir: &Path) -> Option<u64> {
-    let val = fs::read_to_string(app_dir.join("started_at")).ok()?;
+    let val = fs::read_to_string(app_dir.join(STARTED_AT_FILE)).ok()?;
     val.trim().parse::<u64>().ok()
 }
 
 fn contains_case_insensitive(text: &str, query: &str) -> bool {
+    if text.is_ascii() && query.is_ascii() {
+        return contains_ascii_case_insensitive(text.as_bytes(), query.as_bytes());
+    }
+
     text.to_lowercase().contains(&query.to_lowercase())
+}
+
+fn contains_ascii_case_insensitive(text: &[u8], query: &[u8]) -> bool {
+    query.is_empty()
+        || text
+            .windows(query.len())
+            .any(|window| window.eq_ignore_ascii_case(query))
 }
 
 fn required_env_var(name: &str, command: &str) -> String {

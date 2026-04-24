@@ -1,9 +1,11 @@
 use std::{env, fs, io, path::Path};
 
-use crate::shell::un_shell_escape;
+use crate::shell::{is_env_name, un_shell_escape};
+
+pub const ENV_FILE: &str = "env";
 
 pub fn load_env<P: AsRef<Path>>(app_dir: P) -> Result<(), io::Error> {
-    let env_content = fs::read_to_string(app_dir.as_ref().join("env"))?;
+    let env_content = fs::read_to_string(app_dir.as_ref().join(ENV_FILE))?;
     apply_env_content(&env_content);
     Ok(())
 }
@@ -40,5 +42,29 @@ fn parse_export_line(line: &str) -> Option<(&str, &str)> {
     let eq_idx = rest.find('=')?;
     let name = rest[..eq_idx].trim();
     let value_str = rest[eq_idx + 1..].trim();
-    Some((name, value_str))
+    is_env_name(name).then_some((name, value_str))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_env_var, parse_export_line};
+
+    #[test]
+    fn parses_export_line_with_valid_name() {
+        assert_eq!(
+            parse_export_line(r#"declare -x STEAM_COMPAT_DATA_PATH="/tmp/compat data""#),
+            Some(("STEAM_COMPAT_DATA_PATH", r#""/tmp/compat data""#))
+        );
+    }
+
+    #[test]
+    fn rejects_export_line_with_invalid_name() {
+        assert_eq!(parse_export_line("declare -x 1BAD=value"), None);
+    }
+
+    #[test]
+    fn reads_shell_escaped_env_value() {
+        let env_content = r#"declare -x KEY="a b\$c""#;
+        assert_eq!(get_env_var(env_content, "KEY").as_deref(), Some("a b$c"));
+    }
 }
