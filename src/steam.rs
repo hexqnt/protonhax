@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::env_store::get_env_var;
+use crate::{app_id::AppId, env_store::StoredEnv};
+
+pub const STEAM_APP_ID_ENV: &str = "SteamAppId";
+pub const STEAM_COMPAT_DATA_PATH_ENV: &str = "STEAM_COMPAT_DATA_PATH";
 
 #[derive(Default)]
 pub struct AppMeta {
@@ -18,22 +21,19 @@ struct ManifestInfo {
     installdir: Option<String>,
 }
 
-pub fn resolve_app_meta(app_dir: &Path, appid: &str) -> AppMeta {
-    let Ok(env_content) = fs::read_to_string(app_dir.join("env")) else {
-        return AppMeta::default();
-    };
-
-    let Some(compat_data) = get_env_var(&env_content, "STEAM_COMPAT_DATA_PATH") else {
+pub fn resolve_app_meta(environment: &StoredEnv, appid: AppId) -> AppMeta {
+    let Some(compat_data) = environment.get("STEAM_COMPAT_DATA_PATH") else {
         return AppMeta::default();
     };
 
     let compatdata_path = PathBuf::from(compat_data);
-    let direct_steamapps = steamapps_path_from_compat(&compatdata_path, appid);
+    let appid = appid.to_string();
+    let direct_steamapps = steamapps_path_from_compat(&compatdata_path, &appid);
     let manifest = direct_steamapps
-        .and_then(|steamapps| read_manifest(steamapps, appid))
+        .and_then(|steamapps| read_manifest(steamapps, &appid))
         .or_else(|| {
-            let steam_root = get_env_var(&env_content, "STEAM_COMPAT_CLIENT_INSTALL_PATH")?;
-            resolve_from_libraries(Path::new(&steam_root), appid)
+            let steam_root = environment.get("STEAM_COMPAT_CLIENT_INSTALL_PATH")?;
+            resolve_from_libraries(Path::new(steam_root), &appid)
         });
 
     let Some((steamapps_path, manifest)) = manifest else {
