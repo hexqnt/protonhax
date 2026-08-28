@@ -1,11 +1,15 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::env_store::get_env_var;
 
 #[derive(Default)]
 pub struct AppMeta {
     pub name: Option<String>,
-    pub install_path: Option<String>,
+    pub install_path: Option<PathBuf>,
+    pub compatdata_path: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -23,32 +27,65 @@ pub fn resolve_app_meta(app_dir: &Path, appid: &str) -> AppMeta {
         return AppMeta::default();
     };
 
-    let Some(steamapps_path) = steamapps_path_from_compat(&compat_data) else {
-        return AppMeta::default();
+    let compatdata_path = PathBuf::from(compat_data);
+    let direct_steamapps = steamapps_path_from_compat(&compatdata_path, appid);
+    let manifest = direct_steamapps
+        .and_then(|steamapps| read_manifest(steamapps, appid))
+        .or_else(|| {
+            let steam_root = get_env_var(&env_content, "STEAM_COMPAT_CLIENT_INSTALL_PATH")?;
+            resolve_from_libraries(Path::new(&steam_root), appid)
+        });
+
+    let Some((steamapps_path, manifest)) = manifest else {
+        return AppMeta {
+            compatdata_path: Some(compatdata_path),
+            ..AppMeta::default()
+        };
     };
 
-    let manifest_path = steamapps_path.join(format!("appmanifest_{appid}.acf"));
-    let Ok(manifest_content) = fs::read_to_string(manifest_path) else {
-        return AppMeta::default();
-    };
-
-    let manifest = parse_manifest_info(&manifest_content);
-    let install_path = manifest.installdir.map(|dir| {
-        steamapps_path
-            .join("common")
-            .join(dir)
-            .to_string_lossy()
-            .into_owned()
-    });
+    let install_path = manifest
+        .installdir
+        .map(|dir| steamapps_path.join("common").join(dir));
 
     AppMeta {
         name: manifest.name,
         install_path,
+        compatdata_path: Some(compatdata_path),
     }
 }
 
-fn steamapps_path_from_compat(compat_data: &str) -> Option<&Path> {
-    Path::new(compat_data).parent()?.parent()
+fn steamapps_path_from_compat<'a>(compat_data: &'a Path, appid: &str) -> Option<&'a Path> {
+    let compat_dir = compat_data.parent()?;
+    let steamapps = compat_dir.parent()?;
+    (compat_data.file_name()? == appid
+        && compat_dir.file_name()? == "compatdata"
+        && steamapps.file_name()? == "steamapps")
+        .then_some(steamapps)
+}
+
+fn read_manifest(steamapps_path: &Path, appid: &str) -> Option<(PathBuf, ManifestInfo)> {
+    let content =
+        fs::read_to_string(steamapps_path.join(format!("appmanifest_{appid}.acf"))).ok()?;
+    Some((steamapps_path.to_owned(), parse_manifest_info(&content)))
+}
+
+fn resolve_from_libraries(steam_root: &Path, appid: &str) -> Option<(PathBuf, ManifestInfo)> {
+    let root_steamapps = steam_root.join("steamapps");
+    if let Some(manifest) = read_manifest(&root_steamapps, appid) {
+        return Some(manifest);
+    }
+
+    let content = fs::read_to_string(root_steamapps.join("libraryfolders.vdf")).ok()?;
+    parse_library_paths(&content)
+        .map(|library| Path::new(library).join("steamapps"))
+        .find_map(|steamapps| read_manifest(&steamapps, appid))
+}
+
+fn parse_library_paths(content: &str) -> impl Iterator<Item = &str> {
+    content.lines().filter_map(|line| {
+        let (key, value) = parse_acf_line(line)?;
+        (key == "path").then_some(value)
+    })
 }
 
 fn parse_manifest_info(content: &str) -> ManifestInfo {
@@ -87,7 +124,9 @@ fn parse_acf_line(line: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_manifest_info;
+    use std::path::Path;
+
+    use super::{parse_library_paths, parse_manifest_info, steamapps_path_from_compat};
 
     #[test]
     fn parses_manifest_fields() {
@@ -103,5 +142,42 @@ mod tests {
         let info = parse_manifest_info(manifest);
         assert_eq!(info.name.as_deref(), Some("Gunfire Reborn"));
         assert_eq!(info.installdir.as_deref(), Some("Gunfire Reborn"));
+    }
+
+    #[test]
+    fn parses_library_paths() {
+        let folders = r#"
+            "libraryfolders"
+            {
+                "0"
+                {
+                    "path" "/home/user/.local/share/Steam"
+                }
+                "1"
+                {
+                    "path" "/mnt/games/SteamLibrary"
+                }
+            }
+        "#;
+
+        assert_eq!(
+            parse_library_paths(folders).collect::<Vec<_>>(),
+            ["/home/user/.local/share/Steam", "/mnt/games/SteamLibrary"]
+        );
+    }
+
+    #[test]
+    fn accepts_only_expected_compatdata_layout() {
+        assert_eq!(
+            steamapps_path_from_compat(
+                Path::new("/mnt/games/steamapps/compatdata/1217060"),
+                "1217060"
+            ),
+            Some(Path::new("/mnt/games/steamapps"))
+        );
+        assert_eq!(
+            steamapps_path_from_compat(Path::new("/mnt/games/steamapps/compatdata/999"), "1217060"),
+            None
+        );
     }
 }

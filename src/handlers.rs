@@ -34,7 +34,10 @@ struct RunningApp {
     appid: String,
     path: PathBuf,
     name: Option<String>,
-    install_path: Option<String>,
+    install_path: Option<PathBuf>,
+    compatdata_path: Option<PathBuf>,
+    prefix_path: Option<PathBuf>,
+    proton_path: Option<PathBuf>,
     started_at: Option<u64>,
 }
 
@@ -142,16 +145,17 @@ pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
     let mut output = BufWriter::new(stdout.lock());
     for app in apps {
         if !long {
-            writeln!(output, "{}", app.appid.green())?;
+            write!(output, "{}", app.appid.green())?;
+            if let Some(name) = app.name {
+                write!(output, "  {}", name.yellow())?;
+            }
+            writeln!(output)?;
             continue;
         }
 
         write!(output, "{}", app.appid.green())?;
         if let Some(name) = app.name {
             write!(output, "  {}", name.yellow())?;
-        }
-        if let Some(install_path) = app.install_path {
-            write!(output, "  {}", install_path.dimmed())?;
         }
         if let Some(started_at) = app.started_at {
             write!(
@@ -161,6 +165,20 @@ pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
             )?;
         }
         writeln!(output)?;
+        if let Some(prefix_path) = app.prefix_path {
+            writeln!(output, "  {} {}", "Prefix:".dimmed(), prefix_path.display())?;
+        }
+        if let Some(install_path) = app.install_path {
+            writeln!(
+                output,
+                "  {} {}",
+                "Install:".dimmed(),
+                install_path.display()
+            )?;
+        }
+        if let Some(proton_path) = app.proton_path {
+            writeln!(output, "  {} {}", "Proton:".dimmed(), proton_path.display())?;
+        }
     }
 
     Ok(())
@@ -399,7 +417,7 @@ fn collect_running_apps(phd: &Path, data: AppData) -> io::Result<Vec<RunningApp>
         }
 
         let appid = entry.file_name().to_string_lossy().into_owned();
-        let meta = if matches!(data, AppData::Full) {
+        let meta = if matches!(data, AppData::Basic | AppData::Full) {
             resolve_app_meta(&path, &appid)
         } else {
             AppMeta::default()
@@ -408,12 +426,23 @@ fn collect_running_apps(phd: &Path, data: AppData) -> io::Result<Vec<RunningApp>
             AppData::Basic => None,
             AppData::Timing | AppData::Full => read_started_at(&path),
         };
+        let (prefix_path, proton_path) = if matches!(data, AppData::Full) {
+            (
+                read_trimmed(path.join(PFX_FILE)).ok().map(PathBuf::from),
+                read_trimmed(path.join(EXE_FILE)).ok().map(PathBuf::from),
+            )
+        } else {
+            (None, None)
+        };
 
         apps.push(RunningApp {
             appid,
             path,
             name: meta.name,
             install_path: meta.install_path,
+            compatdata_path: meta.compatdata_path,
+            prefix_path,
+            proton_path,
             started_at,
         });
     }
@@ -429,7 +458,10 @@ fn print_ls_json(apps: &[RunningApp]) -> io::Result<()> {
             json!({
                 "appid": app.appid,
                 "name": app.name,
-                "install_path": app.install_path,
+                "install_path": app.install_path.as_ref().map(|path| path.to_string_lossy()),
+                "compatdata_path": app.compatdata_path.as_ref().map(|path| path.to_string_lossy()),
+                "prefix_path": app.prefix_path.as_ref().map(|path| path.to_string_lossy()),
+                "proton_path": app.proton_path.as_ref().map(|path| path.to_string_lossy()),
                 "started_at": app.started_at,
                 "started_ago": app.started_at.map(format_duration_ago),
             })

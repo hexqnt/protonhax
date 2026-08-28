@@ -8,8 +8,8 @@ Rust‑реализация скрипта [jcnils/protonhax](https://github.com
 ## ✨ Возможности
 
 - `init %command%` — перехват запуска игры от Steam и сохранение контекста (авто).
-- `ls` — список текущих игр (appid), для которых сохранён контекст.
-  - добавьте `-l` для подробностей (название, путь установки, время старта).
+- `ls` — список текущих игр (AppID и название), для которых сохранён контекст.
+  - добавьте `-l` для подробностей (префикс, путь установки, Proton и время старта).
 - `ls --json` — тот же список в JSON для скриптов и интеграций.
 - `run <target> <cmd>` — запустить Windows‑программу через Proton в контексте игры.
 - `cmd <target>` — запустить `cmd.exe` в том же префиксе Proton.
@@ -55,11 +55,19 @@ cargo install --path . --locked
 
 ```sh
 protonhax ls
-# или подробный вывод: appid, название и путь установки
+# или подробный вывод: AppID, название, префикс, путь установки и Proton
 protonhax ls -l
 # JSON для скриптов
 protonhax ls --json
-# пример: 1217060  Gunfire Reborn  ~/.local/share/Steam/steamapps/common/Gunfire Reborn  started 12m ago
+```
+
+Пример подробного вывода:
+
+```text
+1217060  Gunfire Reborn  started 12m ago
+  Prefix: /home/user/.local/share/Steam/steamapps/compatdata/1217060/pfx
+  Install: /home/user/.local/share/Steam/steamapps/common/Gunfire Reborn
+  Proton: /home/user/.local/share/Steam/steamapps/common/Proton - Experimental/proton
 ```
 
 Запустить Windows‑программу (например, трейнер) в контексте игры c appid `1217060`:

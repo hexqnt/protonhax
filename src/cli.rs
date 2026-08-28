@@ -12,14 +12,14 @@ pub enum Commands {
     },
     /// Lists all currently running games
     Ls {
-        /// Show extra details (name, install path)
+        /// Show extra details (prefix, install path, Proton, start time)
         #[arg(short = 'l', long = "long")]
         long: bool,
         /// Output as JSON
         #[arg(long = "json")]
         json: bool,
     },
-    /// Runs <cmd> in the context of <target> with proton
+    /// Runs <cmd> as a Windows application in the context of <target> with Proton
     Run {
         /// Target game: appid, `latest`, or part of game name
         appid: String,
@@ -32,7 +32,7 @@ pub enum Commands {
         /// Target game: appid, `latest`, or part of game name
         appid: String,
     },
-    /// Runs <cmd> in the context of <target>
+    /// Runs <cmd> as a Linux application in the context of <target>
     Exec {
         /// Target game: appid, `latest`, or part of game name
         appid: String,
