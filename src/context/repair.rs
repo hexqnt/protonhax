@@ -23,7 +23,8 @@ pub struct RepairSummary {
 
 pub fn repair_contexts(runtime_root: &Path) -> io::Result<RepairSummary> {
     let mut summary = RepairSummary::default();
-    match set_mode_if_needed(runtime_root, 0o700, PathKind::Directory) {
+    let uid = current_uid()?;
+    match set_mode_if_needed(runtime_root, 0o700, PathKind::Directory, uid) {
         Ok(changed) => summary.permissions_fixed += usize::from(changed),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(summary),
         Err(error) => return Err(error),
@@ -41,8 +42,12 @@ pub fn repair_contexts(runtime_root: &Path) -> io::Result<RepairSummary> {
             continue;
         }
         let app_dir = app_entry.path();
-        summary.permissions_fixed +=
-            usize::from(set_mode_if_needed(&app_dir, 0o700, PathKind::Directory)?);
+        summary.permissions_fixed += usize::from(set_mode_if_needed(
+            &app_dir,
+            0o700,
+            PathKind::Directory,
+            uid,
+        )?);
 
         let session_entries = match fs::read_dir(&app_dir) {
             Ok(entries) => entries,
@@ -75,9 +80,10 @@ pub fn repair_contexts(runtime_root: &Path) -> io::Result<RepairSummary> {
                 &session_dir,
                 0o700,
                 PathKind::Directory,
+                uid,
             )?);
             for file in [EXE_FILE, PFX_FILE, STARTED_AT_FILE, ENV_FILE] {
-                match set_mode_if_needed(&session_dir.join(file), 0o600, PathKind::File) {
+                match set_mode_if_needed(&session_dir.join(file), 0o600, PathKind::File, uid) {
                     Ok(changed) => summary.permissions_fixed += usize::from(changed),
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
@@ -90,7 +96,7 @@ pub fn repair_contexts(runtime_root: &Path) -> io::Result<RepairSummary> {
     Ok(summary)
 }
 
-fn set_mode_if_needed(path: &Path, expected: u32, kind: PathKind) -> io::Result<bool> {
+fn set_mode_if_needed(path: &Path, expected: u32, kind: PathKind, uid: u32) -> io::Result<bool> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(io::Error::new(
@@ -101,7 +107,7 @@ fn set_mode_if_needed(path: &Path, expected: u32, kind: PathKind) -> io::Result<
             ),
         ));
     }
-    if metadata.uid() != current_uid()? {
+    if metadata.uid() != uid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("runtime path is owned by another user: {}", path.display()),

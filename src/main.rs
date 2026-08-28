@@ -29,7 +29,7 @@ fn main() -> io::Result<()> {
         eprintln!(
             "{} Protonhax started with args: {:?}",
             "DEBUG".bold().cyan(),
-            env::args().collect::<Vec<String>>()
+            env::args_os().collect::<Vec<_>>()
         );
     }
 

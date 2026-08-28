@@ -1,4 +1,10 @@
-use std::{env, ffi::OsStr, fmt, fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{
+    env,
+    ffi::OsStr,
+    fmt, fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug)]
 pub struct ProtonInvocation {
@@ -14,7 +20,7 @@ impl ProtonInvocation {
         command
             .iter()
             .filter(|argument| {
-                PathBuf::from(argument)
+                Path::new(argument)
                     .file_name()
                     .is_some_and(|name| name == "proton")
             })
@@ -39,14 +45,14 @@ impl fmt::Display for ProtonInvocationError {
 }
 
 fn resolve_executable(argument: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
-    let path = PathBuf::from(argument);
+    let path = Path::new(argument);
     if path.components().count() > 1 {
-        return is_executable_file(&path).then_some(path);
+        return is_executable_file(path).then(|| path.to_path_buf());
     }
 
     let inherited_path = env::var_os("PATH");
     env::split_paths(search_path.or(inherited_path.as_deref())?)
-        .map(|directory| directory.join(&path))
+        .map(|directory| directory.join(path))
         .find(|candidate| is_executable_file(candidate))
 }
 

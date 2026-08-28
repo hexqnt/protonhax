@@ -54,9 +54,8 @@ struct Check {
 }
 
 struct Report {
-    json: bool,
     section: String,
-    checks: Vec<Check>,
+    checks: Option<Vec<Check>>,
     warnings: usize,
     errors: usize,
 }
@@ -64,24 +63,28 @@ struct Report {
 impl Report {
     fn new(json: bool) -> Self {
         Self {
-            json,
             section: String::new(),
-            checks: Vec::new(),
+            checks: json.then(Vec::new),
             warnings: 0,
             errors: 0,
         }
     }
 
     fn section(&mut self, name: impl Into<String>) {
-        self.section = name.into();
-        if !self.json {
-            println!("\n{}:", self.section);
+        let name = name.into();
+        if self.checks.is_some() {
+            self.section = name;
+        } else {
+            println!("\n{name}:");
         }
     }
 
     fn context(&mut self, title: &str) {
-        self.section = format!("Contexts/{title}");
-        if !self.json {
+        if self.checks.is_some() {
+            self.section.clear();
+            self.section.push_str("Contexts/");
+            self.section.push_str(title);
+        } else {
             println!("  {} {title}", "•".cyan().bold());
         }
     }
@@ -105,7 +108,13 @@ impl Report {
     }
 
     fn push(&mut self, level: Level, message: String) {
-        if !self.json {
+        if let Some(checks) = &mut self.checks {
+            checks.push(Check {
+                section: self.section.clone(),
+                level,
+                message,
+            });
+        } else {
             let label = match level {
                 Level::Ok => "OK".green().bold(),
                 Level::Info => "INFO".cyan().bold(),
@@ -114,17 +123,11 @@ impl Report {
             };
             println!("    {label} {message}");
         }
-        self.checks.push(Check {
-            section: self.section.clone(),
-            level,
-            message,
-        });
     }
 
     fn finish(&self, repair: Option<RepairSummary>) -> io::Result<()> {
-        if self.json {
-            let checks: Vec<_> = self
-                .checks
+        if let Some(checks) = &self.checks {
+            let checks: Vec<_> = checks
                 .iter()
                 .map(|check| {
                     json!({

@@ -25,7 +25,7 @@ pub const STARTED_AT_FILE: &str = "started_at";
 const MAX_STORED_PATH_SIZE: u64 = 64 * 1024;
 
 pub struct PendingContext {
-    path: Option<PathBuf>,
+    path: PathBuf,
     app_dir: PathBuf,
 }
 
@@ -38,9 +38,10 @@ impl PendingContext {
         environment: &StoredEnv,
         started_at: u64,
     ) -> io::Result<Self> {
-        ensure_private_dir(runtime_root)?;
+        let uid = current_uid()?;
+        ensure_private_dir(runtime_root, uid)?;
         let app_dir = runtime_root.join(appid.to_string());
-        ensure_private_dir(&app_dir)?;
+        ensure_private_dir(&app_dir, uid)?;
 
         let identity = SessionId::for_pid(process::id())?;
         let nonce = SystemTime::now()
@@ -57,34 +58,26 @@ impl PendingContext {
             return Err(error);
         }
 
-        Ok(Self {
-            path: Some(path),
-            app_dir,
-        })
+        Ok(Self { path, app_dir })
     }
 
     pub fn publish(mut self, owner_pid: u32) -> io::Result<PublishedContext> {
         let session_id = SessionId::for_pid(owner_pid)?;
         let final_path = self.app_dir.join(session_id.to_string());
-        let pending_path = self.path.take().expect("pending context must have a path");
-        if let Err(error) = fs::rename(&pending_path, &final_path) {
-            self.path = Some(pending_path);
-            return Err(error);
-        }
+        fs::rename(&self.path, &final_path)?;
         let _ = sync_directory(&self.app_dir);
+        let app_dir = std::mem::take(&mut self.app_dir);
 
         Ok(PublishedContext {
             path: final_path,
-            app_dir: self.app_dir.clone(),
+            app_dir,
         })
     }
 }
 
 impl Drop for PendingContext {
     fn drop(&mut self) {
-        if let Some(path) = &self.path {
-            let _ = fs::remove_dir_all(path);
-        }
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -139,7 +132,7 @@ fn write_context_files(
     sync_directory(path)
 }
 
-fn ensure_private_dir(path: &Path) -> io::Result<()> {
+fn ensure_private_dir(path: &Path, uid: u32) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -151,7 +144,7 @@ fn ensure_private_dir(path: &Path) -> io::Result<()> {
                     ),
                 ));
             }
-            if metadata.uid() != current_uid()? {
+            if metadata.uid() != uid {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!(
@@ -160,7 +153,11 @@ fn ensure_private_dir(path: &Path) -> io::Result<()> {
                     ),
                 ));
             }
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            if metadata.permissions().mode() & 0o777 == 0o700 {
+                Ok(())
+            } else {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => create_private_dir(path),
         Err(error) => Err(error),

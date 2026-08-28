@@ -13,8 +13,9 @@ use crate::{
 
 use super::{EXE_FILE, PFX_FILE, STARTED_AT_FILE, SessionId, read_stored_path};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ContextDetail {
+    Identity,
     Summary,
     Full,
 }
@@ -33,37 +34,58 @@ pub struct RunningApp {
 }
 
 impl RunningApp {
-    pub fn recency(&self) -> (u64, u64, u32) {
-        let (start_ticks, pid) = self.session_id.recency();
-        (self.started_at.unwrap_or(0), start_ticks, pid)
+    pub fn recency(&self) -> (u64, u32) {
+        self.session_id.recency()
+    }
+}
+
+struct ContextEntry {
+    appid: AppId,
+    session_id: SessionId,
+    path: PathBuf,
+    active: bool,
+}
+
+impl ContextEntry {
+    fn load(self, detail: ContextDetail) -> RunningApp {
+        read_context(self.path, self.appid, self.session_id, self.active, detail)
     }
 }
 
 pub fn active_apps(runtime_root: &Path, detail: ContextDetail) -> io::Result<Vec<RunningApp>> {
-    let mut latest = BTreeMap::<AppId, RunningApp>::new();
-    for context in collect_contexts(runtime_root, detail, false)? {
+    let mut latest = BTreeMap::<AppId, ContextEntry>::new();
+    for context in collect_context_entries(runtime_root)? {
+        if !context.active {
+            continue;
+        }
         match latest.entry(context.appid) {
             Entry::Vacant(entry) => {
                 entry.insert(context);
             }
-            Entry::Occupied(mut entry) if context.recency() > entry.get().recency() => {
+            Entry::Occupied(mut entry)
+                if context.session_id.recency() > entry.get().session_id.recency() =>
+            {
                 entry.insert(context);
             }
             Entry::Occupied(_) => {}
         }
     }
-    Ok(latest.into_values().collect())
+    Ok(latest
+        .into_values()
+        .map(|context| context.load(detail))
+        .collect())
 }
 
 pub fn all_contexts(runtime_root: &Path, detail: ContextDetail) -> io::Result<Vec<RunningApp>> {
-    collect_contexts(runtime_root, detail, true)
+    let mut contexts: Vec<_> = collect_context_entries(runtime_root)?
+        .into_iter()
+        .map(|context| context.load(detail))
+        .collect();
+    contexts.sort_by_key(|app| (app.appid, app.session_id.recency()));
+    Ok(contexts)
 }
 
-fn collect_contexts(
-    runtime_root: &Path,
-    detail: ContextDetail,
-    include_stale: bool,
-) -> io::Result<Vec<RunningApp>> {
+fn collect_context_entries(runtime_root: &Path) -> io::Result<Vec<ContextEntry>> {
     let app_entries = match fs::read_dir(runtime_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -102,19 +124,15 @@ fn collect_contexts(
                 continue;
             };
             let active = session_id.is_active();
-            if active || include_stale {
-                apps.push(read_context(
-                    session_entry.path(),
-                    appid,
-                    session_id,
-                    active,
-                    detail,
-                ));
-            }
+            apps.push(ContextEntry {
+                path: session_entry.path(),
+                appid,
+                session_id,
+                active,
+            });
         }
     }
 
-    apps.sort_by_key(|app| (app.appid, app.recency()));
     Ok(apps)
 }
 
@@ -125,12 +143,16 @@ fn read_context(
     active: bool,
     detail: ContextDetail,
 ) -> RunningApp {
-    let meta = StoredEnv::load(&path).map_or_else(
-        |_| AppMeta::default(),
-        |environment| resolve_app_meta(&environment, appid),
-    );
+    let meta = if detail >= ContextDetail::Summary {
+        StoredEnv::load(&path).map_or_else(
+            |_| AppMeta::default(),
+            |environment| resolve_app_meta(&environment, appid),
+        )
+    } else {
+        AppMeta::default()
+    };
     let (prefix_path, proton_path, started_at) = match detail {
-        ContextDetail::Summary => (None, None, None),
+        ContextDetail::Identity | ContextDetail::Summary => (None, None, None),
         ContextDetail::Full => (
             read_stored_path(path.join(PFX_FILE)).ok(),
             read_stored_path(path.join(EXE_FILE)).ok(),

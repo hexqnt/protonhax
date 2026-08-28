@@ -191,7 +191,7 @@ pub fn sub_usage(sub: &str) {
         let _ = sc.print_help();
         println!();
     } else {
-        // Fallback — общая справка
+        // Резервный вывод общей справки.
         let _ = cmd.print_help();
         println!();
     }

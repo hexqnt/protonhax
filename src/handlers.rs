@@ -228,7 +228,7 @@ pub fn handle_profile_run(
 }
 
 pub fn handle_env(runtime_root: &Path, selector: &TargetSelector) -> io::Result<()> {
-    let app = resolve_running_app(runtime_root, selector)?;
+    let app = resolve_running_app(runtime_root, selector, ContextDetail::Identity)?;
     let environment = StoredEnv::load(&app.path)?;
     let stdout = io::stdout();
     environment.write_display(stdout.lock())
@@ -239,7 +239,7 @@ pub fn handle_info(
     selector: &TargetSelector,
     json_output: bool,
 ) -> io::Result<()> {
-    let app = resolve_running_app(runtime_root, selector)?;
+    let app = resolve_running_app(runtime_root, selector, ContextDetail::Full)?;
     if json_output {
         let stdout = io::stdout();
         let mut output = stdout.lock();
@@ -279,14 +279,22 @@ fn parse_init_command(cmd: Vec<String>) -> InitCommand {
 }
 
 fn prepare_context(runtime_root: &Path, selector: &TargetSelector) -> io::Result<RunContext> {
-    let app = resolve_running_app(runtime_root, selector)?;
-    let target = to_target_app(&app);
-    let env = StoredEnv::load(&target.context_dir)?;
+    let app = resolve_running_app(runtime_root, selector, ContextDetail::Identity)?;
+    let env = StoredEnv::load(&app.path)?;
+    let target = to_target_app(app);
     Ok(RunContext { target, env })
 }
 
-fn resolve_running_app(runtime_root: &Path, selector: &TargetSelector) -> io::Result<RunningApp> {
-    let mut apps = active_apps(runtime_root, ContextDetail::Full)?;
+fn resolve_running_app(
+    runtime_root: &Path,
+    selector: &TargetSelector,
+    detail: ContextDetail,
+) -> io::Result<RunningApp> {
+    let detail = match selector {
+        TargetSelector::Name(_) => detail.max(ContextDetail::Summary),
+        TargetSelector::Latest | TargetSelector::AppId(_) => detail,
+    };
+    let mut apps = active_apps(runtime_root, detail)?;
     let index = match selector {
         TargetSelector::Latest => apps
             .iter()
@@ -310,42 +318,41 @@ fn resolve_running_app(runtime_root: &Path, selector: &TargetSelector) -> io::Re
 }
 
 fn resolve_app_by_name(apps: &[RunningApp], query: &str) -> usize {
-    let matches: Vec<_> = apps
-        .iter()
-        .enumerate()
-        .filter(|app| {
-            app.1
-                .name
-                .as_deref()
-                .is_some_and(|name| contains_case_insensitive(name, query))
-        })
-        .collect();
+    let mut matches = apps.iter().enumerate().filter(|app| {
+        app.1
+            .name
+            .as_deref()
+            .is_some_and(|name| contains_case_insensitive(name, query))
+    });
 
-    match matches.as_slice() {
-        [(index, _)] => *index,
-        [] => {
-            eprintln!(
-                "{} No running application has a matching name \"{query}\".",
-                "Error:".bold().red()
-            );
-            process::exit(2);
-        }
-        _ => {
-            let apps: Vec<_> = matches.iter().map(|(_, app)| *app).collect();
-            print_ambiguous_matches(query, &apps);
-            process::exit(2);
-        }
-    }
+    let Some((index, first)) = matches.next() else {
+        eprintln!(
+            "{} No running application has a matching name \"{query}\".",
+            "Error:".bold().red()
+        );
+        process::exit(2);
+    };
+    let Some((_, second)) = matches.next() else {
+        return index;
+    };
+
+    print_ambiguous_matches(
+        query,
+        [first, second]
+            .into_iter()
+            .chain(matches.map(|(_, app)| app)),
+    );
+    process::exit(2);
 }
 
-fn to_target_app(app: &RunningApp) -> TargetApp {
+fn to_target_app(app: RunningApp) -> TargetApp {
     TargetApp {
         appid: app.appid,
-        context_dir: app.path.clone(),
+        context_dir: app.path,
     }
 }
 
-fn print_ambiguous_matches(query: &str, matches: &[&RunningApp]) {
+fn print_ambiguous_matches<'a>(query: &str, matches: impl IntoIterator<Item = &'a RunningApp>) {
     eprintln!(
         "{} Multiple applications match name \"{query}\":",
         "Error:".bold().red()

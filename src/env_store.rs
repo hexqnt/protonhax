@@ -39,7 +39,8 @@ impl StoredEnv {
     /// Загружает бинарный снимок окружения с сохранением не-UTF-8 значений Unix.
     pub fn load(context_dir: &Path) -> io::Result<Self> {
         let path = context_dir.join(ENV_FILE);
-        let metadata = fs::metadata(&path)?;
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
         if metadata.len() > MAX_ENV_FILE_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -47,7 +48,9 @@ impl StoredEnv {
             ));
         }
 
-        Self::decode(&fs::read(path)?)
+        let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
+        file.take(MAX_ENV_FILE_SIZE + 1).read_to_end(&mut bytes)?;
+        Self::decode(&bytes)
     }
 
     pub fn write_to(&self, mut output: impl Write) -> io::Result<()> {
@@ -74,8 +77,9 @@ impl StoredEnv {
 
     pub fn get(&self, key: &str) -> Option<&OsStr> {
         self.0
-            .iter()
-            .find_map(|(name, value)| (name == key).then_some(value.as_os_str()))
+            .binary_search_by(|(name, _)| name.as_bytes().cmp(key.as_bytes()))
+            .ok()
+            .map(|index| self.0[index].1.as_os_str())
     }
 
     /// Выводит снимок в однострочном диагностическом формате, скрывая секреты.
@@ -139,7 +143,7 @@ impl StoredEnv {
         }
 
         let count = read_u32(&mut input)? as usize;
-        let mut vars = Vec::with_capacity(count.min(1024));
+        let mut vars: Vec<(OsString, OsString)> = Vec::with_capacity(count.min(1024));
         for _ in 0..count {
             let name_len = read_u32(&mut input)? as usize;
             let value_len = read_u32(&mut input)? as usize;
@@ -164,6 +168,15 @@ impl StoredEnv {
                     "environment file contains an invalid variable",
                 ));
             }
+            if vars
+                .last()
+                .is_some_and(|(previous, _)| previous.as_bytes() >= name.as_slice())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "environment variables are not strictly ordered",
+                ));
+            }
             let name = OsString::from_vec(name);
             if !should_store(&name) {
                 return Err(io::Error::new(
@@ -186,17 +199,20 @@ impl StoredEnv {
 }
 
 pub(crate) fn is_sensitive_name(name: &OsStr) -> bool {
-    let upper = name.to_string_lossy().to_ascii_uppercase();
+    let name = name.as_bytes();
     [
-        "TOKEN",
-        "PASSWORD",
-        "SECRET",
-        "PRIVATE_KEY",
-        "ACCESS_KEY",
-        "API_KEY",
+        b"TOKEN".as_slice(),
+        b"PASSWORD",
+        b"SECRET",
+        b"PRIVATE_KEY",
+        b"ACCESS_KEY",
+        b"API_KEY",
     ]
     .iter()
-    .any(|marker| upper.contains(marker))
+    .any(|marker| {
+        name.windows(marker.len())
+            .any(|window| window.eq_ignore_ascii_case(marker))
+    })
 }
 
 fn should_store(name: &OsStr) -> bool {
@@ -262,8 +278,8 @@ mod tests {
     #[test]
     fn applies_all_stored_variables_to_command() {
         let env = roundtrip(vec![
-            (OsString::from("VALID"), OsString::from("one")),
             (OsString::from("QUOTED"), OsString::from("two words")),
+            (OsString::from("VALID"), OsString::from("one")),
         ]);
         let mut command = Command::new("true");
         env.configure(&mut command);
@@ -275,6 +291,24 @@ mod tests {
     #[test]
     fn rejects_truncated_input() {
         assert!(StoredEnv::decode(b"PHENV\0\0\x01\x01").is_err());
+    }
+
+    #[test]
+    fn rejects_unsorted_or_duplicate_names() {
+        let unsorted = StoredEnv(vec![
+            (OsString::from("B"), OsString::from("one")),
+            (OsString::from("A"), OsString::from("two")),
+        ]);
+        let duplicate = StoredEnv(vec![
+            (OsString::from("A"), OsString::from("one")),
+            (OsString::from("A"), OsString::from("two")),
+        ]);
+
+        for environment in [unsorted, duplicate] {
+            let mut bytes = Vec::new();
+            environment.write_to(&mut bytes).unwrap();
+            assert!(StoredEnv::decode(&bytes).is_err());
+        }
     }
 
     #[test]
@@ -307,5 +341,12 @@ mod tests {
         assert!(output.contains("VISIBLE=one\\ntwo"));
         assert!(output.contains("ACCESS_TOKEN=<redacted>"));
         assert!(!output.contains("must-not-be-printed"));
+    }
+
+    #[test]
+    fn sensitive_name_detection_is_ascii_case_insensitive() {
+        assert!(super::is_sensitive_name(OsStr::new("github_token")));
+        assert!(super::is_sensitive_name(OsStr::new("DbPasswordFile")));
+        assert!(!super::is_sensitive_name(OsStr::new("KEYBOARD_LAYOUT")));
     }
 }
