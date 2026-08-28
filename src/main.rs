@@ -1,19 +1,20 @@
 #![warn(clippy::pedantic)]
 
+use std::{env, io};
+
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
+use colored::Colorize;
+
+use crate::cli::{Cli, Commands};
+use crate::runtime::{debug_enabled, runtime_root};
+
 mod cli;
 mod env_store;
 mod handlers;
 mod runtime;
 mod shell;
 mod steam;
-
-use clap::{CommandFactory, Parser};
-use clap_complete::generate;
-use colored::Colorize;
-use std::{env, io};
-
-use crate::cli::{Cli, Commands};
-use crate::runtime::{debug_enabled, runtime_root};
 
 fn main() -> io::Result<()> {
     let debug = debug_enabled();

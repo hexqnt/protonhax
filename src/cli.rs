@@ -2,16 +2,6 @@ use clap::CommandFactory;
 use clap::{Parser, Subcommand};
 use clap_complete::shells::Shell as CompleteShell;
 
-#[derive(Parser)]
-#[command(
-    name = "protonhax",
-    about = "Tool to help running other programs inside Steam's proton."
-)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
 #[derive(Subcommand)]
 pub enum Commands {
     /// Should only be called by Steam with "protonhax init %COMMAND%"
@@ -33,7 +23,7 @@ pub enum Commands {
     Run {
         /// Target game: appid, `latest`, or part of game name
         appid: String,
-        /// The command to run with proton
+        /// The command to run Windows applications with proton
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
@@ -46,7 +36,7 @@ pub enum Commands {
     Exec {
         /// Target game: appid, `latest`, or part of game name
         appid: String,
-        /// The command to execute natively
+        /// The command to execute Linux applications natively without proton prefix
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
     },
@@ -58,6 +48,16 @@ pub enum Commands {
     },
     /// Validate current runtime contexts and environment
     Doctor,
+}
+
+#[derive(Parser)]
+#[command(
+    name = "protonhax",
+    about = "Tool to help running other programs inside Steam's proton."
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
 }
 
 /// Вывод справки для конкретной подкоманды.

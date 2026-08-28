@@ -1,15 +1,16 @@
-use colored::Colorize;
-use serde_json::json;
 use std::{
     env, fs,
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     process,
 };
 
+use colored::Colorize;
+use serde_json::json;
+
 use crate::{
     cli::sub_usage,
-    env_store::{ENV_FILE, get_env_var, load_env, set_env_var},
+    env_store::{ENV_FILE, StoredEnv, get_env_var},
     runtime::{format_duration_ago, unix_now_secs},
     shell::{is_env_assignment, shell_escape, split_env_assignment},
     steam::{AppMeta, resolve_app_meta},
@@ -22,6 +23,13 @@ const STEAM_APP_ID_ENV: &str = "SteamAppId";
 const STEAM_COMPAT_DATA_PATH_ENV: &str = "STEAM_COMPAT_DATA_PATH";
 const LATEST_SELECTOR: &str = "latest";
 
+#[derive(Clone, Copy)]
+enum AppData {
+    Basic,
+    Timing,
+    Full,
+}
+
 struct RunningApp {
     appid: String,
     path: PathBuf,
@@ -33,6 +41,20 @@ struct RunningApp {
 struct TargetApp {
     appid: String,
     app_dir: PathBuf,
+}
+
+struct RunContext {
+    target: TargetApp,
+    env: StoredEnv,
+}
+
+impl RunContext {
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> process::Command {
+        let mut command = process::Command::new(program);
+        self.env.apply_to(&mut command);
+        command.env(STEAM_APP_ID_ENV, &self.target.appid);
+        command
+    }
 }
 
 struct InitCommand {
@@ -52,7 +74,7 @@ impl InitCommand {
 
 pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> {
     if cmd.is_empty() {
-        print_subcommand_usage_error("init", "Не указана команда для запуска");
+        print_subcommand_usage_error("init", "No command specified");
     }
 
     let appid = required_env_var(STEAM_APP_ID_ENV, "init");
@@ -66,7 +88,7 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
     let real_cmd = init_command.command();
     // Находим путь к proton в аргументах.
     let Some(proton_path) = real_cmd.iter().find(|arg| arg.contains("/proton")) else {
-        print_subcommand_usage_error("init", "Путь к proton не найден в команде");
+        print_subcommand_usage_error("init", "Proton path not found in command");
     };
 
     // Сохраняем данные.
@@ -105,36 +127,40 @@ pub fn handle_init(phd: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> 
 }
 
 pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
-    let apps = collect_running_apps(phd, long || json_output)?;
+    let data = if long || json_output {
+        AppData::Full
+    } else {
+        AppData::Basic
+    };
+    let apps = collect_running_apps(phd, data)?;
 
     if json_output {
         return print_ls_json(&apps);
     }
 
+    let stdout = io::stdout();
+    let mut output = BufWriter::new(stdout.lock());
     for app in apps {
         if !long {
-            println!("{}", app.appid.green());
+            writeln!(output, "{}", app.appid.green())?;
             continue;
         }
 
-        let mut parts: Vec<String> = Vec::with_capacity(4);
-        parts.push(app.appid.green().to_string());
-
+        write!(output, "{}", app.appid.green())?;
         if let Some(name) = app.name {
-            parts.push(name.yellow().to_string());
+            write!(output, "  {}", name.yellow())?;
         }
         if let Some(install_path) = app.install_path {
-            parts.push(install_path.dimmed().to_string());
+            write!(output, "  {}", install_path.dimmed())?;
         }
         if let Some(started_at) = app.started_at {
-            parts.push(
-                format!("started {}", format_duration_ago(started_at))
-                    .dimmed()
-                    .to_string(),
-            );
+            write!(
+                output,
+                "  {}",
+                format!("started {}", format_duration_ago(started_at)).dimmed()
+            )?;
         }
-
-        println!("{}", parts.join("  "));
+        writeln!(output)?;
     }
 
     Ok(())
@@ -142,35 +168,32 @@ pub fn handle_ls(phd: &Path, long: bool, json_output: bool) -> io::Result<()> {
 
 pub fn handle_run(phd: &Path, appid: &str, cmd: &[String]) -> io::Result<()> {
     if cmd.is_empty() {
-        print_subcommand_usage_error("run", "Не указана команда для запуска");
+        print_subcommand_usage_error("run", "No command specified");
     }
 
-    let target = prepare_context(phd, appid)?;
-    let exe = read_trimmed(target.app_dir.join(EXE_FILE))?;
-    let status = process::Command::new(exe).arg("run").args(cmd).status()?;
+    let context = prepare_context(phd, appid)?;
+    let exe = read_trimmed(context.target.app_dir.join(EXE_FILE))?;
+    let status = context.command(exe).arg("run").args(cmd).status()?;
     exit_with_status(status);
 }
 
 pub fn handle_cmd(phd: &Path, appid: &str) -> io::Result<()> {
-    let target = prepare_context(phd, appid)?;
-    let exe = read_trimmed(target.app_dir.join(EXE_FILE))?;
-    let pfx = read_trimmed(target.app_dir.join(PFX_FILE))?;
+    let context = prepare_context(phd, appid)?;
+    let exe = read_trimmed(context.target.app_dir.join(EXE_FILE))?;
+    let pfx = read_trimmed(context.target.app_dir.join(PFX_FILE))?;
     let cmd_exe = format!("{pfx}/drive_c/windows/system32/cmd.exe");
 
-    let status = process::Command::new(exe)
-        .arg("run")
-        .arg(cmd_exe)
-        .status()?;
+    let status = context.command(exe).arg("run").arg(cmd_exe).status()?;
     exit_with_status(status);
 }
 
 pub fn handle_exec(phd: &Path, appid: &str, cmd: &[String]) -> io::Result<()> {
     if cmd.is_empty() {
-        print_subcommand_usage_error("exec", "Не указана команда для запуска");
+        print_subcommand_usage_error("exec", "No command specified");
     }
 
-    let _ = prepare_context(phd, appid)?;
-    let status = process::Command::new(&cmd[0]).args(&cmd[1..]).status()?;
+    let context = prepare_context(phd, appid)?;
+    let status = context.command(&cmd[0]).args(&cmd[1..]).status()?;
     exit_with_status(status);
 }
 
@@ -184,7 +207,7 @@ pub fn handle_doctor(phd: &Path) -> io::Result<()> {
     if let Ok(steam_app_id) = env::var(STEAM_APP_ID_ENV) {
         doctor_ok(&format!("{STEAM_APP_ID_ENV}={steam_app_id}"));
     } else {
-        doctor_info("SteamAppId не установлен (это нормально вне запуска через Steam)");
+        doctor_info("SteamAppId is not set (expected outside a Steam launch)");
     }
 
     match env::var(STEAM_COMPAT_DATA_PATH_ENV) {
@@ -194,12 +217,12 @@ pub fn handle_doctor(phd: &Path) -> io::Result<()> {
             } else {
                 warnings += 1;
                 doctor_warn(&format!(
-                    "{STEAM_COMPAT_DATA_PATH_ENV} установлен, но путь не найден: {path}"
+                    "{STEAM_COMPAT_DATA_PATH_ENV} is set, but the path does not exist: {path}"
                 ));
             }
         }
         Err(_) => {
-            doctor_info("STEAM_COMPAT_DATA_PATH не установлен (это нормально вне запуска игры)");
+            doctor_info("STEAM_COMPAT_DATA_PATH is not set (expected outside a game launch)");
         }
     }
 
@@ -209,16 +232,16 @@ pub fn handle_doctor(phd: &Path) -> io::Result<()> {
     } else {
         warnings += 1;
         doctor_warn(&format!(
-            "runtime root отсутствует: {} (ещё не было активных контекстов)",
+            "runtime root does not exist: {} (no active contexts have been created yet)",
             phd.display()
         ));
     }
 
     println!("\nContexts:");
-    let apps = collect_running_apps(phd, true)?;
+    let apps = collect_running_apps(phd, AppData::Full)?;
     if apps.is_empty() {
         warnings += 1;
-        doctor_warn("активных контекстов не найдено");
+        doctor_warn("no active contexts found");
     }
 
     for app in &apps {
@@ -242,17 +265,14 @@ fn parse_init_command(cmd: Vec<String>) -> InitCommand {
     // Steam иногда прокидывает %COMMAND% одной shell-строкой.
     let tokens = if cmd.len() == 1 && cmd[0].contains(char::is_whitespace) {
         shell_words::split(&cmd[0]).unwrap_or_else(|err| {
-            print_subcommand_usage_error("init", &format!("Не удалось разобрать команду: {err}"));
+            print_subcommand_usage_error("init", &format!("Failed to parse command: {err}"));
         })
     } else {
         cmd
     };
 
     let Some(cmd_start_index) = tokens.iter().position(|arg| !is_env_assignment(arg)) else {
-        print_subcommand_usage_error(
-            "init",
-            "Не указана команда для запуска после присваиваний окружения",
-        );
+        print_subcommand_usage_error("init", "No command specified after environment assignments");
     };
 
     InitCommand {
@@ -261,11 +281,10 @@ fn parse_init_command(cmd: Vec<String>) -> InitCommand {
     }
 }
 
-fn prepare_context(phd: &Path, selector: &str) -> io::Result<TargetApp> {
+fn prepare_context(phd: &Path, selector: &str) -> io::Result<RunContext> {
     let target = resolve_target_app(phd, selector)?;
-    set_env_var(STEAM_APP_ID_ENV, &target.appid);
-    load_env(&target.app_dir)?;
-    Ok(target)
+    let env = StoredEnv::load(&target.app_dir)?;
+    Ok(RunContext { target, env })
 }
 
 fn resolve_target_app(phd: &Path, selector: &str) -> io::Result<TargetApp> {
@@ -285,45 +304,47 @@ fn resolve_target_app(phd: &Path, selector: &str) -> io::Result<TargetApp> {
 }
 
 fn resolve_latest_app(phd: &Path) -> io::Result<TargetApp> {
-    let apps = collect_running_apps(phd, false)?;
+    let mut apps = collect_running_apps(phd, AppData::Timing)?;
     if apps.is_empty() {
         eprintln!(
-            "{} Нет активных контекстов. Сначала запустите игру через Steam.",
-            "Ошибка:".bold().red()
+            "{} No active contexts. Start a game through Steam first.",
+            "Error:".bold().red()
         );
         process::exit(2);
     }
 
-    if let Some(app) = apps
+    if let Some(index) = apps
         .iter()
-        .filter_map(|app| app.started_at.map(|started_at| (started_at, app)))
+        .enumerate()
+        .filter_map(|(index, app)| app.started_at.map(|started_at| (started_at, index)))
         .max_by_key(|(started_at, _)| *started_at)
-        .map(|(_, app)| app)
+        .map(|(_, index)| index)
     {
+        let app = apps.swap_remove(index);
         return Ok(TargetApp {
-            appid: app.appid.clone(),
-            app_dir: app.path.clone(),
+            appid: app.appid,
+            app_dir: app.path,
         });
     }
 
     if apps.len() == 1 {
-        let app = &apps[0];
+        let app = apps.pop().expect("length checked above");
         return Ok(TargetApp {
-            appid: app.appid.clone(),
-            app_dir: app.path.clone(),
+            appid: app.appid,
+            app_dir: app.path,
         });
     }
 
     eprintln!(
-        "{} Невозможно определить latest: нет started_at у активных контекстов.",
-        "Ошибка:".bold().red()
+        "{} Cannot resolve latest: active contexts have no valid started_at.",
+        "Error:".bold().red()
     );
-    eprintln!("Укажите appid явно (см. `protonhax ls -l`).");
+    eprintln!("Specify an appid explicitly (see `protonhax ls -l`).");
     process::exit(2);
 }
 
 fn resolve_app_by_name(phd: &Path, query: &str) -> io::Result<TargetApp> {
-    let apps = collect_running_apps(phd, true)?;
+    let apps = collect_running_apps(phd, AppData::Full)?;
     let matches: Vec<&RunningApp> = apps
         .iter()
         .filter(|app| {
@@ -340,8 +361,8 @@ fn resolve_app_by_name(phd: &Path, query: &str) -> io::Result<TargetApp> {
         }),
         [] => {
             eprintln!(
-                "{} Нет запущенного приложения с appid \"{query}\" и нет совпадений по имени.",
-                "Ошибка:".bold().red()
+                "{} No running application has appid \"{query}\" or a matching name.",
+                "Error:".bold().red()
             );
             process::exit(2);
         }
@@ -354,17 +375,17 @@ fn resolve_app_by_name(phd: &Path, query: &str) -> io::Result<TargetApp> {
 
 fn print_ambiguous_matches(query: &str, matches: &[&RunningApp]) {
     eprintln!(
-        "{} Несколько совпадений по имени \"{query}\":",
-        "Ошибка:".bold().red()
+        "{} Multiple applications match name \"{query}\":",
+        "Error:".bold().red()
     );
     for app in matches {
-        let name = app.name.as_deref().unwrap_or("<без названия>");
+        let name = app.name.as_deref().unwrap_or("<unnamed>");
         eprintln!("  {}  {}", app.appid.green(), name.yellow());
     }
-    eprintln!("Уточните appid через `protonhax ls -l`.");
+    eprintln!("Specify an appid from `protonhax ls -l`.");
 }
 
-fn collect_running_apps(phd: &Path, with_meta: bool) -> io::Result<Vec<RunningApp>> {
+fn collect_running_apps(phd: &Path, data: AppData) -> io::Result<Vec<RunningApp>> {
     if !phd.exists() {
         return Ok(Vec::new());
     }
@@ -377,13 +398,16 @@ fn collect_running_apps(phd: &Path, with_meta: bool) -> io::Result<Vec<RunningAp
             continue;
         }
 
-        let appid = entry.file_name().to_string_lossy().to_string();
-        let meta = if with_meta {
+        let appid = entry.file_name().to_string_lossy().into_owned();
+        let meta = if matches!(data, AppData::Full) {
             resolve_app_meta(&path, &appid)
         } else {
             AppMeta::default()
         };
-        let started_at = read_started_at(&path);
+        let started_at = match data {
+            AppData::Basic => None,
+            AppData::Timing | AppData::Full => read_started_at(&path),
+        };
 
         apps.push(RunningApp {
             appid,
@@ -412,9 +436,10 @@ fn print_ls_json(apps: &[RunningApp]) -> io::Result<()> {
         })
         .collect();
 
-    let serialized = serde_json::to_string_pretty(&data).map_err(io::Error::other)?;
-    println!("{serialized}");
-    Ok(())
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer_pretty(&mut output, &data).map_err(io::Error::other)?;
+    writeln!(output)
 }
 
 fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
@@ -429,11 +454,11 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
             doctor_ok(&format!("exe: {exe}"));
         } else {
             *errors += 1;
-            doctor_err(&format!("exe путь не существует: {exe}"));
+            doctor_err(&format!("exe path does not exist: {exe}"));
         }
     } else {
         *errors += 1;
-        doctor_err("файл exe отсутствует или не читается");
+        doctor_err("exe file is missing or unreadable");
     }
 
     if let Ok(pfx) = read_trimmed(app.path.join(PFX_FILE)) {
@@ -441,15 +466,15 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
             doctor_ok(&format!("pfx: {pfx}"));
         } else {
             *warnings += 1;
-            doctor_warn(&format!("pfx путь не существует: {pfx}"));
+            doctor_warn(&format!("pfx path does not exist: {pfx}"));
         }
     } else {
         *warnings += 1;
-        doctor_warn("файл pfx отсутствует или не читается");
+        doctor_warn("pfx file is missing or unreadable");
     }
 
     if let Ok(env_content) = fs::read_to_string(app.path.join(ENV_FILE)) {
-        doctor_ok("env: файл окружения прочитан");
+        doctor_ok("env: environment file is readable");
         match get_env_var(&env_content, STEAM_COMPAT_DATA_PATH_ENV) {
             Some(compat_data) if Path::new(&compat_data).exists() => {
                 doctor_ok(&format!("env.STEAM_COMPAT_DATA_PATH: {compat_data}"));
@@ -457,17 +482,17 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
             Some(compat_data) => {
                 *warnings += 1;
                 doctor_warn(&format!(
-                    "env.STEAM_COMPAT_DATA_PATH указывает на отсутствующий путь: {compat_data}"
+                    "env.STEAM_COMPAT_DATA_PATH points to a missing path: {compat_data}"
                 ));
             }
             None => {
                 *warnings += 1;
-                doctor_warn("env: отсутствует STEAM_COMPAT_DATA_PATH");
+                doctor_warn("env: STEAM_COMPAT_DATA_PATH is missing");
             }
         }
     } else {
         *errors += 1;
-        doctor_err("файл env отсутствует или не читается");
+        doctor_err("env file is missing or unreadable");
     }
 
     if let Some(started_at) = app.started_at {
@@ -477,7 +502,7 @@ fn inspect_context(app: &RunningApp, warnings: &mut usize, errors: &mut usize) {
         ));
     } else {
         *warnings += 1;
-        doctor_warn("started_at отсутствует или повреждён");
+        doctor_warn("started_at is missing or invalid");
     }
 }
 
@@ -499,7 +524,7 @@ fn doctor_info(message: &str) {
 
 fn write_env_file(app_dir: &Path) -> io::Result<()> {
     let env_path = app_dir.join(ENV_FILE);
-    let mut env_file = fs::File::create(env_path)?;
+    let mut env_file = BufWriter::new(fs::File::create(env_path)?);
     let mut vars: Vec<_> = env::vars().collect();
     vars.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
@@ -538,12 +563,12 @@ fn contains_ascii_case_insensitive(text: &[u8], query: &[u8]) -> bool {
 fn required_env_var(name: &str, command: &str) -> String {
     match env::var(name) {
         Ok(value) => value,
-        Err(_) => print_subcommand_usage_error(command, &format!("{name} не установлен")),
+        Err(_) => print_subcommand_usage_error(command, &format!("{name} is not set")),
     }
 }
 
 fn print_subcommand_usage_error(subcommand: &str, message: &str) -> ! {
-    eprintln!("{} {message}", "Ошибка:".bold().red());
+    eprintln!("{} {message}", "Error:".bold().red());
     sub_usage(subcommand);
     process::exit(1);
 }

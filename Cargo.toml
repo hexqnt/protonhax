@@ -6,10 +6,10 @@ version = "0.9.3"
 edition = "2024"
 authors = ["hexqnt <hexqntlab@gmail.com>"]
 description = "Утилита для запуска программ в среде Proton Steam"
-license = "MIT"
+license = "MIT or Apache-2.0"
 categories = ["command-line-utilities"]
 keywords = ["games", "steam", "proton"]
-readme = "Readme.md"
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
@@ -25,3 +25,10 @@ codegen-units = 1
 opt-level = 3
 panic = "abort"
 rustflags = ["-Ctarget-cpu=x86-64-v3", "-Ctarget-feature=+avx2,+fma"]
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
