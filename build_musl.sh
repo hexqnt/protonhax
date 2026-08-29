@@ -1,6 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
+
 docker pull clux/muslrust:nightly
-docker run -u $(id -u):$(id -g) \
--v $PWD:/volume \
--e CARGO_HOME=/tmp/cargo \
---rm -t clux/muslrust:nightly cargo build --release
+docker run \
+    --user "$(id -u):$(id -g)" \
+    --volume "$PWD:/volume" \
+    --env CARGO_HOME=/tmp/cargo \
+    --rm \
+    --tty \
+    clux/muslrust:nightly cargo build --release

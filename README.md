@@ -1,68 +1,78 @@
-# protonhax 🚀
+# ProtonHax 🚀
 
-CLI-программа помогающая запускать любые программы в контексте запущенной игры под Steam Proton, вдохновлённая скриптом [jcnils/protonhax](https://github.com/jcnils/protonhax).
+[🇺🇸 English](./README.md) · [🇷🇺 Русский](./README.ru.md)
 
-## ✨ Возможности
+**Run Windows programs in the Proton environment of a running Steam game.**
 
-- `init %command%` — перехват запуска игры от Steam и сохранение контекста.
-- `ls` — список текущих игр (AppID и название), для которых сохранён контекст.
-  - добавьте `-l` для подробностей (префикс, путь установки, Proton и время старта).
-- `ls --json` — тот же список в JSON для скриптов и интеграций.
-- `run <target> <cmd>` — запустить Windows‑программу через Proton в контексте игры.
-  - `--detach` запускает программу в фоне с отключёнными стандартными потоками.
-  - `--cwd <path|exe-dir>`, `--env NAME=VALUE` и `--unset-env NAME` настраивают запуск.
-- `cmd <target>` — запустить `cmd.exe` в том же префиксе Proton.
-- `exec <target> <cmd>` — запустить нативную Linux‑команду с окружением игры.
-  - поддерживает повторяемые `--env NAME=VALUE` и `--unset-env NAME`.
-- `env <target>` — безопасно вывести сохранённое окружение.
-- `info <target> [--json]` — подробная информация об одном активном контексте.
-  - `target` может быть: `appid`, `latest`, или часть имени игры.
-- `doctor [--json] [--fix]` — проверка окружения и runtime‑контекстов; `--fix` удаляет stale-сессии и исправляет права.
-- `profile` — сохранить, запустить, вывести или удалить профиль команды.
-- `completions <shell>` — генерация автодополнений (bash/zsh/fish/powershell).
+ProtonHax is a command-line tool for Linux, written in Rust. It launches Windows executables—such as trainers, Cheat Engine, and debugging tools—in the same Proton prefix and environment as a running Steam game. Inspired by the [jcnils/protonhax](https://github.com/jcnils/protonhax) script.
 
-## 📦 Установка
+ProtonHax captures a game's Steam Proton environment so you can reuse it to:
 
-Скачайте архив для своей системы со страницы [GitHub Releases](https://github.com/hexquant/protonhax/releases). Для большинства дистрибутивов Linux подойдёт архив `x86_64-unknown-linux-gnu`, а `x86_64-unknown-linux-musl` не зависит от системной glibc (должно работать на большем дистрибутиве Linux).
+- Run `.exe` files in the game's Proton prefix
+- Launch Cheat Engine, trainers, and debugging tools through Proton
+- Open `cmd.exe` in the running game's Proton environment
+- Execute native Linux commands with the game's environment variables
+- Find running games by Steam AppID or name
+- Diagnose broken or stale Proton contexts
 
-Распакуйте скачанный архив и установите бинарник:
+## ✨ Features
+
+- `init %command%` — intercept a game launched by Steam and save its context.
+- `ls` — list active games (AppID and name) with a saved context.
+  - Add `-l` to show the prefix, installation path, Proton executable, and start time.
+- `ls --json` — output the same list as JSON for scripts and integrations.
+- `run <target> <cmd>` — run a Windows program through Proton in a game's context.
+  - `--detach` runs the program in the background with its standard streams disconnected.
+  - `--cwd <path|exe-dir>`, `--env NAME=VALUE`, and `--unset-env NAME` customize the launch.
+- `cmd <target>` — open `cmd.exe` in the same Proton prefix.
+- `exec <target> <cmd>` — run a native Linux command with the game's environment.
+  - Supports repeated `--env NAME=VALUE` and `--unset-env NAME` options.
+- `env <target>` — print the saved environment.
+- `info <target> [--json]` — show detailed information about one active context.
+  - `target` can be an AppID, `latest`, or part of a game name.
+- `doctor [--json] [--fix]` — check the local setup and saved runtime contexts; `--fix` removes stale sessions and repairs permissions.
+- `profile` — save, run, list, or remove command profiles.
+
+## 📦 Installation
+
+Download the archive for your system from [GitHub Releases](https://github.com/hexqnt/protonhax/releases). Use the `x86_64-unknown-linux-gnu` build on most glibc-based Linux distributions. The `x86_64-unknown-linux-musl` build does not depend on the system's glibc. Both release builds require an x86-64-v3-compatible CPU.
+
+Extract the archive and install the binary:
 
 ```sh
 tar -xzf protonhax-*-x86_64-unknown-linux-*.tar.gz
 install -Dm755 protonhax-*-x86_64-unknown-linux-*/bin/protonhax ~/.local/bin/protonhax
 ```
 
-Или соберите и установите `protonhax` из исходников (требуется Rust toolchain):
+Alternatively, build and install `protonhax` from source (requires the [Rust toolchain](https://rust-lang.org/tools/install/)):
 
 ```sh
-git clone https://github.com/hexquant/protonhax.git
+git clone https://github.com/hexqnt/protonhax.git
 cd protonhax
 cargo install --path . --locked --root ~/.local
 ```
 
-Убедитесь, что `~/.local/bin` в `PATH`.
+Make sure `~/.local/bin` is in your `PATH`.
 
-## 🕹️ Использование со Steam
+## 🕹️ Steam setup
 
-В свойствах игры → Launch Options пропишите полный путь к установленному бинарнику:
+Open the game's properties in Steam and enter the full path to the installed binary under **Launch Options**:
 
 ```sh
 /home/<user>/.local/bin/protonhax init %command%
-# или:
-/home/<user>/.local/bin/protonhax init %COMMAND%
 ```
 
-## 💡 Примеры CLI
+## 💡 CLI examples
 
-Список активных игр:
+List active games:
 
 ```sh
 protonhax ls
-# или подробный вывод: AppID, название, префикс, путь установки и Proton
+# Show AppID, name, prefix, installation path, and Proton executable
 protonhax ls -l
 ```
 
-Пример подробного вывода:
+Example of detailed output:
 
 ```text
 1217060  Gunfire Reborn  started 12m ago
@@ -71,66 +81,66 @@ protonhax ls -l
   Proton: /home/user/.local/share/Steam/steamapps/common/Proton - Experimental/proton
 ```
 
-Запустить Windows‑программу (например, трейнер) в контексте игры c appid `1217060`:
+Run a Windows program (for example, a trainer) in the context of the game with AppID `1217060`:
 
 ```sh
 protonhax run 1217060 "/home/<user>/Downloads/Gunfire_Reborn_v1.0-v20251025_Plus_8_Trainer.exe"
 
-# Быстрый запуск в контексте последней активной игры
+# Use the most recently started active game
 protonhax run latest "/home/<user>/Downloads/trainer.exe"
 
-# Поиск по части имени игры
+# Find a game by part of its name
 protonhax run "gunfire" "/home/<user>/Downloads/trainer.exe"
 
-# Запустить trainer в фоне из его собственного каталога
+# Run a trainer in the background from its own directory
 protonhax run latest --detach --cwd exe-dir "/home/<user>/Downloads/trainer.exe"
 
-# Переопределить окружение конкретного запуска
+# Override environment variables for this launch
 protonhax run latest --env WINEDEBUG=-all --unset-env DXVK_LOG_LEVEL "/home/<user>/Downloads/trainer.exe"
 ```
 
-Открыть `cmd.exe` в том же префиксе Proton:
+Open `cmd.exe` in the same Proton prefix:
 
 ```sh
 protonhax cmd latest
 ```
 
-Запустить нативную команду Linux с тем же окружением:
+Run a native Linux command with the same environment:
 
 ```sh
 protonhax exec "gunfire" env | sort
 
-# Переопределения доступны и для нативных команд
+# Environment overrides are also available for native commands
 protonhax exec latest --env MANGOHUD=1 --unset-env WINEDEBUG mangohud --help
 ```
 
-Посмотреть окружение или информацию о контексте:
+Inspect a saved environment or context:
 
 ```sh
 protonhax env latest
 protonhax info latest
 ```
 
-Проверить окружение и сохранённые контексты:
+Check the local setup and saved contexts:
 
 ```sh
 protonhax doctor
-# Удалить устаревшие runtime-сессии и исправить права доступа
+# Remove stale runtime sessions and repair permissions
 protonhax doctor --fix
 ```
 
-## 💾 Профили команд
+## 💾 Command profiles
 
-Профиль сохраняет цель, тип команды, аргументы, рабочий каталог и изменения окружения. Конфигурация записывается атомарно в `$XDG_CONFIG_HOME/protonhax/profiles.json` с приватными правами; без `XDG_CONFIG_HOME` используется `~/.config/protonhax/profiles.json`.
+A profile stores the target, command type, arguments, working directory, and environment changes. ProtonHax writes the configuration atomically to `$XDG_CONFIG_HOME/protonhax/profiles.json` with permissions restricted to the current user. If `XDG_CONFIG_HOME` is not set, it uses `~/.config/protonhax/profiles.json`.
 
 ```sh
-# Сохранить Windows-трейнер
+# Save a Windows trainer
 protonhax profile add trainer latest --detach --cwd exe-dir --env WINEDEBUG=-all -- "/home/<user>/Downloads/trainer.exe"
 
-# Запустить сохранённый профиль; дополнительные аргументы добавляются в конец
+# Run the saved profile and append extra arguments
 protonhax profile run trainer -- --silent
 
-# Сохранить нативную команду
+# Save a native command
 protonhax profile add game-env latest --kind native -- env
 
 protonhax profile ls
@@ -138,16 +148,16 @@ protonhax profile ls --json
 protonhax profile remove trainer
 ```
 
-Полная справка:
+For complete command-line help:
 
 ```sh
 protonhax --help
 protonhax run --help
 ```
 
-## 🧩 Автодополнение
+## 🧩 Shell completions
 
-Сгенерировать автодополнения:
+Generate completion scripts:
 
 ```sh
 # Bash
@@ -155,34 +165,32 @@ protonhax completions bash > ~/.local/share/bash-completion/completions/protonha
 
 # Zsh
 protonhax completions zsh > ~/.zfunc/_protonhax
-print -P '%F{yellow}Добавьте в ~/.zshrc: fpath+=(~/.zfunc) && autoload -Uz compinit && compinit%f'
+print -P '%F{yellow}Add to ~/.zshrc: fpath+=(~/.zfunc) && autoload -Uz compinit && compinit%f'
 
 # Fish
 protonhax completions fish > ~/.config/fish/completions/protonhax.fish
 ```
 
-## 🛠️ Отладка и логирование
+## 🛠️ Debugging and logging
 
-- Включить подробные логи самого protonhax:
+Enable ProtonHax debug output:
 
 ```sh
 PROTONHAX_DEBUG=1 protonhax ls
 ```
 
-Runtime-контексты публикуются атомарно в `$XDG_RUNTIME_DIR/protonhax` с правами только для текущего пользователя. Для каждого запуска хранится отдельная PID-сессия; завершённые или оставшиеся после аварии сессии не используются командами `run`/`exec` и показываются в `doctor` как stale.
+Runtime contexts are published atomically, normally under `$XDG_RUNTIME_DIR/protonhax`, with access restricted to the current user. Each game launch gets a separate PID-based session. Commands such as `run` and `exec` ignore sessions whose processes have exited, including those left behind by a crash; `doctor` reports them as stale.
 
-Снимок окружения сохраняет Unix-значения без потерь, включая не-UTF-8 и переводы строк. В целях безопасности protonhax не сохраняет переменные, в имени которых встречаются `TOKEN`, `PASSWORD`, `SECRET`, `PRIVATE_KEY`, `ACCESS_KEY` или `API_KEY`.
+Environment snapshots preserve Unix values losslessly, including non-UTF-8 data and line breaks. For security, ProtonHax does not save variables whose names contain `TOKEN`, `PASSWORD`, `SECRET`, `PRIVATE_KEY`, `ACCESS_KEY`, or `API_KEY`.
 
-- Перенаправить вывод в файл (удобно для Steam):
+To redirect output to a file (useful when launching through Steam):
 
 ```sh
 /home/<user>/.local/bin/protonhax init %command% &> ~/protonhax.log
 ```
 
-## ⚠️ Примечания
+## ⚠️ Notes
 
-- Сообщения вида
-  `ERROR: ld.so: object '.../ubuntu12_32/gameoverlayrenderer.so' ... ELFCLASS32` —
-  безвредны и исходят от Steam Overlay (32‑битная библиотека подмешивается в 64‑битный процесс).
-- Если игра не стартует — временно включите `PROTONHAX_DEBUG=1` и проверьте лог.
-- Для Steam Flatpak разместите бинарник protonhax в домашнем каталоге, доступном sandbox, и используйте его полный путь в Launch Options. `protonhax doctor` автоматически определит Flatpak и покажет рекомендации; запускать Steam из терминала не требуется. Для нативной команды вне sandbox можно использовать профиль с `flatpak-spawn --host`.
+- Messages such as `ERROR: ld.so: object '.../ubuntu12_32/gameoverlayrenderer.so' ... ELFCLASS32` are harmless Steam Overlay warnings caused by a 32-bit library being injected into a 64-bit process.
+- If the game does not start, temporarily enable `PROTONHAX_DEBUG=1` and inspect the log.
+- For the Flatpak version of Steam, place the ProtonHax binary somewhere in your home directory that the sandbox can access, then use its full path in **Launch Options**. `protonhax doctor` detects Flatpak automatically and provides setup guidance, so you do not need to launch Steam from a terminal. To run a native command outside the sandbox, use a profile with `flatpak-spawn --host`.
