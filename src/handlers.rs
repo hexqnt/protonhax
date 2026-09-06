@@ -152,16 +152,16 @@ pub fn handle_run(
     cmd: &[String],
     options: &RunOptions,
 ) -> io::Result<()> {
-    if cmd.is_empty() {
+    let Some((executable, _)) = cmd.split_first() else {
         print_subcommand_usage_error("run", "No command specified");
-    }
+    };
 
     let context = prepare_context(runtime_root, selector)?;
     let exe = read_stored_path(context.target.context_dir.join(EXE_FILE))?;
     let mut command = context.command(exe, &options.environment);
     command.arg("run").args(cmd);
     if let Some(cwd) = &options.cwd {
-        cwd.apply_to(&mut command, &cmd[0]);
+        cwd.apply_to(&mut command, executable);
     }
     if options.detach {
         configure_detached(&mut command);
@@ -193,14 +193,14 @@ pub fn handle_exec(
     cmd: &[String],
     environment: &EnvironmentChanges,
 ) -> io::Result<()> {
-    if cmd.is_empty() {
+    let Some((executable, args)) = cmd.split_first() else {
         print_subcommand_usage_error("exec", "No command specified");
-    }
+    };
 
     let context = prepare_context(runtime_root, selector)?;
     let status = context
-        .command(&cmd[0], environment)
-        .args(&cmd[1..])
+        .command(executable, environment)
+        .args(args)
         .status()?;
     exit_with_status(status);
 }
@@ -257,8 +257,10 @@ pub fn handle_info(
 
 fn parse_init_command(cmd: Vec<String>) -> InitCommand {
     // Steam иногда прокидывает %COMMAND% одной shell-строкой.
-    let tokens = if cmd.len() == 1 && cmd[0].contains(char::is_whitespace) {
-        shell_words::split(&cmd[0]).unwrap_or_else(|error| {
+    let tokens = if let [command] = cmd.as_slice()
+        && command.contains(char::is_whitespace)
+    {
+        shell_words::split(command).unwrap_or_else(|error| {
             print_subcommand_usage_error("init", &format!("Failed to parse command: {error}"));
         })
     } else {

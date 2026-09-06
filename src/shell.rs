@@ -77,7 +77,7 @@ impl fmt::Display for EnvOverride {
 }
 
 pub fn is_env_assignment(s: &str) -> bool {
-    s.split_once('=').is_some_and(|(name, _)| is_env_name(name))
+    split_env_assignment(s).is_some()
 }
 
 pub fn split_env_assignment(s: &str) -> Option<(&str, &str)> {
@@ -86,9 +86,9 @@ pub fn split_env_assignment(s: &str) -> Option<(&str, &str)> {
 }
 
 pub fn is_env_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))
-        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'_' | b'A'..=b'Z' | b'a'..=b'z'))
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]

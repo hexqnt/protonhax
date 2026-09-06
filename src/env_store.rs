@@ -3,8 +3,8 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs,
-    io::{self, Cursor, Read, Write},
-    os::unix::ffi::{OsStrExt, OsStringExt},
+    io::{self, Read, Write},
+    os::unix::ffi::OsStrExt,
     path::Path,
     process::Command,
 };
@@ -132,7 +132,7 @@ impl StoredEnv {
     }
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
-        let mut input = Cursor::new(bytes);
+        let mut input = bytes;
         let mut magic = [0; MAGIC.len()];
         input.read_exact(&mut magic)?;
         if &magic != MAGIC {
@@ -147,13 +147,9 @@ impl StoredEnv {
         for _ in 0..count {
             let name_len = read_u32(&mut input)? as usize;
             let value_len = read_u32(&mut input)? as usize;
-            let remaining = u64::try_from(bytes.len())
-                .unwrap_or(u64::MAX)
-                .saturating_sub(input.position());
             if name_len
                 .checked_add(value_len)
-                .and_then(|total_len| u64::try_from(total_len).ok())
-                .is_none_or(|total_len| total_len > remaining)
+                .is_none_or(|total_len| total_len > input.len())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -170,24 +166,24 @@ impl StoredEnv {
             }
             if vars
                 .last()
-                .is_some_and(|(previous, _)| previous.as_bytes() >= name.as_slice())
+                .is_some_and(|(previous, _)| previous.as_bytes() >= name)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "environment variables are not strictly ordered",
                 ));
             }
-            let name = OsString::from_vec(name);
-            if !should_store(&name) {
+            let name = OsStr::from_bytes(name);
+            if !should_store(name) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "environment file contains a sensitive variable",
                 ));
             }
-            vars.push((name, OsString::from_vec(value)));
+            vars.push((name.to_owned(), OsStr::from_bytes(value).to_owned()));
         }
 
-        if input.position() != bytes.len() as u64 {
+        if !input.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "environment file has trailing data",
@@ -238,9 +234,14 @@ fn read_u32(input: &mut impl Read) -> io::Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn read_bytes(input: &mut impl Read, len: usize) -> io::Result<Vec<u8>> {
-    let mut bytes = vec![0; len];
-    input.read_exact(&mut bytes)?;
+fn read_bytes<'a>(input: &mut &'a [u8], len: usize) -> io::Result<&'a [u8]> {
+    let (bytes, remaining) = input.split_at_checked(len).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "environment entry exceeds the file size",
+        )
+    })?;
+    *input = remaining;
     Ok(bytes)
 }
 
@@ -290,7 +291,39 @@ mod tests {
 
     #[test]
     fn rejects_truncated_input() {
-        assert!(StoredEnv::decode(b"PHENV\0\0\x01\x01").is_err());
+        let environment = StoredEnv(vec![(OsString::from("A"), OsString::from("value"))]);
+        let mut bytes = Vec::new();
+        environment.write_to(&mut bytes).unwrap();
+
+        for len in 0..bytes.len() {
+            assert!(StoredEnv::decode(&bytes[..len]).is_err(), "length: {len}");
+        }
+        assert!(StoredEnv::decode(&bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_entry_lengths_exceeding_available_data() {
+        let mut bytes = Vec::from(*super::MAGIC);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        assert_eq!(
+            StoredEnv::decode(&bytes).err().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn rejects_trailing_data() {
+        let mut bytes = Vec::new();
+        StoredEnv(Vec::new()).write_to(&mut bytes).unwrap();
+        bytes.push(0);
+
+        assert_eq!(
+            StoredEnv::decode(&bytes).err().unwrap().kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

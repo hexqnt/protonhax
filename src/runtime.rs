@@ -2,7 +2,7 @@ use std::{
     env, fs, io,
     path::PathBuf,
     process,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const SECS_PER_MINUTE: u64 = 60;
@@ -32,7 +32,7 @@ pub fn debug_enabled() -> bool {
 pub fn unix_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
+        .unwrap_or_default()
         .as_secs()
 }
 
