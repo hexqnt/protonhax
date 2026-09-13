@@ -12,6 +12,7 @@ use crate::{
 #[derive(Subcommand)]
 pub enum Commands {
     /// Should only be called by Steam with "protonhax init %COMMAND%"
+    #[command(after_help = "Examples:\n  protonhax init %COMMAND%")]
     Init {
         /// The command to initialize with (e.g., the original %COMMAND%)
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -27,6 +28,11 @@ pub enum Commands {
         json: bool,
     },
     /// Runs <cmd> as a Windows application in the context of <target> with Proton
+    #[command(after_help = "\
+Examples:
+  protonhax run latest ~/Downloads/trainer.exe
+  protonhax run 1217060 --detach --cwd exe-dir ~/Downloads/trainer.exe
+  protonhax run gunfire --env WINEDEBUG=-all -- trainer.exe --silent")]
     Run {
         /// Target game: appid, `latest`, or part of game name
         target: TargetSelector,
@@ -42,6 +48,10 @@ pub enum Commands {
         target: TargetSelector,
     },
     /// Runs <cmd> as a Linux application in the context of <target>
+    #[command(after_help = "\
+Examples:
+  protonhax exec latest env
+  protonhax exec gunfire --env MANGOHUD=1 --unset-env WINEDEBUG -- mangohud --help")]
     Exec {
         /// Target game: appid, `latest`, or part of game name
         target: TargetSelector,
@@ -65,6 +75,11 @@ pub enum Commands {
         json: bool,
     },
     /// Manage saved command profiles
+    #[command(after_help = "\
+Examples:
+  protonhax profile add trainer latest -- ~/Downloads/trainer.exe
+  protonhax profile run trainer
+  protonhax profile ls")]
     Profile {
         #[command(subcommand)]
         command: ProfileCommands,
@@ -89,6 +104,10 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum ProfileCommands {
     /// Save or replace a profile
+    #[command(after_help = "\
+Examples:
+  protonhax profile add trainer latest --detach --cwd exe-dir -- ~/Downloads/trainer.exe
+  protonhax profile add game-env latest --kind native -- env")]
     Add {
         /// Profile name
         name: ProfileName,
@@ -104,6 +123,10 @@ pub enum ProfileCommands {
         cmd: Vec<String>,
     },
     /// Run a saved profile and optionally append arguments
+    #[command(after_help = "\
+Examples:
+  protonhax profile run trainer
+  protonhax profile run trainer -- --silent")]
     Run {
         /// Profile name
         name: ProfileName,
@@ -151,7 +174,15 @@ pub struct RunOptionsArgs {
     name = "protonhax",
     version,
     disable_version_flag = true,
-    about = "Tool to help running other programs inside Steam's proton."
+    about = "Run other programs inside a Steam Proton environment.",
+    after_help = "\
+Examples:
+  protonhax ls --long
+  protonhax run latest ~/Downloads/trainer.exe
+  protonhax cmd latest
+  protonhax doctor
+
+Run `protonhax <command> --help` for command-specific examples."
 )]
 pub struct Cli {
     /// Print version

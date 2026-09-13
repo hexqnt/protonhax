@@ -46,6 +46,36 @@ fn prints_greeting_with_version_without_command() {
     assert!(stdout.starts_with(&format!("protonhax {}\n", env!("CARGO_PKG_VERSION"))));
     assert!(stdout.contains("Commands:"));
     assert!(stdout.contains("  run          Runs <cmd> as a Windows application"));
+    assert!(stdout.contains("Examples:\n  protonhax ls --long"));
+    assert!(stdout.contains("protonhax <command> --help"));
+}
+
+#[test]
+fn prints_command_specific_examples() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["init", "--help"], "protonhax init %COMMAND%"),
+        (&["run", "--help"], "protonhax run latest"),
+        (&["exec", "--help"], "protonhax exec latest env"),
+        (&["profile", "--help"], "protonhax profile ls"),
+        (
+            &["profile", "add", "--help"],
+            "protonhax profile add trainer",
+        ),
+        (
+            &["profile", "run", "--help"],
+            "protonhax profile run trainer",
+        ),
+    ];
+
+    for &(args, example) in cases {
+        let output = successful(Command::new(BIN).args(args));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains("Examples:"),
+            "missing examples for {args:?}"
+        );
+        assert!(stdout.contains(example), "missing `{example}` for {args:?}");
+    }
 }
 
 #[test]
