@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     process,
@@ -9,14 +9,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
     launch::{EnvironmentChanges, RunOptions},
     runtime::current_uid,
 };
 
-use super::{Profile, ProfileName};
+use super::{Profile, ProfileName, view::ProfileView};
 
 const CONFIG_FILE: &str = "profiles.json";
 const CONFIG_VERSION: u32 = 1;
@@ -44,7 +44,7 @@ impl Store {
     }
 
     pub(super) fn decode(bytes: &[u8]) -> io::Result<Self> {
-        let dto: StoreDto = serde_json::from_slice(bytes).map_err(invalid_json)?;
+        let dto: StoreDto = serde_json::from_slice(bytes).map_err(invalid_data)?;
         if dto.version != CONFIG_VERSION {
             return Err(invalid_data("unsupported profile configuration version"));
         }
@@ -52,7 +52,7 @@ impl Store {
         let profiles = dto
             .profiles
             .into_iter()
-            .map(|(name, profile)| Ok((name.parse().map_err(invalid_parse)?, profile.try_into()?)))
+            .map(|(name, profile)| Ok((name.parse().map_err(invalid_data)?, profile.try_into()?)))
             .collect::<io::Result<_>>()?;
         Ok(Self { profiles })
     }
@@ -66,15 +66,18 @@ impl Store {
         let temporary = root.join(format!(".{CONFIG_FILE}.{}-{nonce}", process::id()));
         let destination = root.join(CONFIG_FILE);
         let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)?;
-            serde_json::to_writer_pretty(&mut file, &StoreDto::from(self))
+            let mut file = BufWriter::new(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&temporary)?,
+            );
+            serde_json::to_writer_pretty(&mut file, &StoreView::from(self))
                 .map_err(io::Error::other)?;
             writeln!(file)?;
-            file.sync_all()?;
+            file.flush()?;
+            file.get_ref().sync_all()?;
             fs::rename(&temporary, destination)?;
             fs::File::open(root)?.sync_all()
         })();
@@ -85,26 +88,40 @@ impl Store {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct StoreDto {
     version: u32,
     profiles: BTreeMap<String, ProfileDto>,
 }
 
-impl From<&Store> for StoreDto {
-    fn from(store: &Store) -> Self {
+#[derive(Serialize)]
+struct StoreView<'a> {
+    version: u32,
+    #[serde(serialize_with = "serialize_profiles")]
+    profiles: &'a BTreeMap<ProfileName, Profile>,
+}
+
+impl<'a> From<&'a Store> for StoreView<'a> {
+    fn from(store: &'a Store) -> Self {
         Self {
             version: CONFIG_VERSION,
-            profiles: store
-                .profiles
-                .iter()
-                .map(|(name, profile)| (name.to_string(), ProfileDto::from(profile)))
-                .collect(),
+            profiles: &store.profiles,
         }
     }
 }
 
-#[derive(Deserialize, Serialize)]
+fn serialize_profiles<S: Serializer>(
+    profiles: &BTreeMap<ProfileName, Profile>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(
+        profiles
+            .iter()
+            .map(|(name, profile)| (name.as_str(), ProfileView::new(profile, false))),
+    )
+}
+
+#[derive(Deserialize)]
 struct ProfileDto {
     target: String,
     kind: String,
@@ -115,45 +132,19 @@ struct ProfileDto {
     unset_environment: Vec<String>,
 }
 
-impl From<&Profile> for ProfileDto {
-    fn from(profile: &Profile) -> Self {
-        Self {
-            target: profile.target.to_string(),
-            kind: profile.kind.to_string(),
-            command: profile.command.clone(),
-            detach: profile.run_options.detach,
-            cwd: profile.run_options.cwd.as_ref().map(ToString::to_string),
-            environment: profile
-                .run_options
-                .environment
-                .overrides
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-            unset_environment: profile
-                .run_options
-                .environment
-                .removals
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-        }
-    }
-}
-
 impl TryFrom<ProfileDto> for Profile {
     type Error = io::Error;
 
     fn try_from(dto: ProfileDto) -> Result<Self, Self::Error> {
         Self::new(
-            dto.target.parse().map_err(invalid_parse)?,
+            dto.target.parse().map_err(invalid_data)?,
             dto.kind.parse()?,
             dto.command,
             RunOptions {
                 detach: dto.detach,
                 cwd: dto
                     .cwd
-                    .map(|cwd| cwd.parse().map_err(invalid_parse))
+                    .map(|cwd| cwd.parse().map_err(invalid_data))
                     .transpose()?,
                 environment: EnvironmentChanges {
                     overrides: parse_all(dto.environment)?,
@@ -219,49 +210,160 @@ where
 {
     values
         .into_iter()
-        .map(|value| value.parse().map_err(invalid_parse))
+        .map(|value| value.parse().map_err(invalid_data))
         .collect()
 }
 
-fn invalid_json(error: serde_json::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-fn invalid_parse(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-fn invalid_data(message: &'static str) -> io::Error {
+fn invalid_data(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Store;
-    use crate::profile::{ProfileKind, ProfileName};
+    use std::io;
+
+    use serde_json::{Value, json};
+
+    use super::{Store, StoreView};
+    use crate::profile::{ProfileKind, ProfileName, profile_json};
+
+    const LEGACY_CONFIG: &[u8] = br#"{
+        "version": 1,
+        "profiles": {
+            "trainer": {
+                "target": "latest",
+                "kind": "proton",
+                "command": ["/tmp/trainer.exe", "--message", "quoted \"value\""],
+                "detach": true,
+                "cwd": "exe-dir",
+                "environment": ["DXVK_LOG_LEVEL=none", "TRAINER_TOKEN=secret=value"],
+                "unset_environment": ["WINEDEBUG"]
+            }
+        }
+    }"#;
 
     #[test]
-    fn configuration_is_parsed_into_typed_values() {
-        let data = br#"{
-            "version": 1,
-            "profiles": {
-                "trainer": {
-                    "target": "latest",
-                    "kind": "proton",
-                    "command": ["/tmp/trainer.exe"],
-                    "detach": true,
-                    "cwd": "exe-dir",
-                    "environment": ["DXVK_LOG_LEVEL=none"],
-                    "unset_environment": ["WINEDEBUG"]
-                }
-            }
-        }"#;
-        let store = Store::decode(data).unwrap();
+    fn legacy_configuration_roundtrips_without_changing_the_contract() {
+        let store = Store::decode(LEGACY_CONFIG).unwrap();
         let profile = store
             .profiles
             .get(&"trainer".parse::<ProfileName>().unwrap())
             .unwrap();
         assert_eq!(profile.kind, ProfileKind::Proton);
         assert!(profile.run_options.detach);
+
+        let encoded = serde_json::to_vec(&StoreView::from(&store)).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&encoded).unwrap(),
+            serde_json::from_slice::<Value>(LEGACY_CONFIG).unwrap()
+        );
+        assert_eq!(Store::decode(&encoded).unwrap().profiles, store.profiles);
+    }
+
+    #[test]
+    fn listing_redacts_secrets_without_changing_the_persisted_profile() {
+        let store = Store::decode(LEGACY_CONFIG).unwrap();
+        let persisted = serde_json::to_vec(&StoreView::from(&store)).unwrap();
+        let (name, profile) = store.profiles.first_key_value().unwrap();
+        let listed = profile_json(name, profile).unwrap();
+        assert_eq!(listed["name"], "trainer");
+        assert_eq!(
+            listed["environment"],
+            json!(["DXVK_LOG_LEVEL=none", "TRAINER_TOKEN=<redacted>"])
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&persisted).unwrap()["profiles"]["trainer"]["environment"],
+            json!(["DXVK_LOG_LEVEL=none", "TRAINER_TOKEN=secret=value"])
+        );
+        assert_eq!(
+            serde_json::to_vec(&StoreView::from(&store)).unwrap(),
+            persisted
+        );
+    }
+
+    #[test]
+    fn invalid_configuration_keeps_typed_errors() {
+        let cases = [
+            (
+                "target",
+                json!("4294967296"),
+                io::ErrorKind::InvalidData,
+                "appid is out of range:",
+            ),
+            (
+                "kind",
+                json!("PROTON"),
+                io::ErrorKind::InvalidData,
+                "invalid profile kind",
+            ),
+            (
+                "command",
+                json!([]),
+                io::ErrorKind::InvalidInput,
+                "profile command must not be empty",
+            ),
+            (
+                "cwd",
+                json!(""),
+                io::ErrorKind::InvalidData,
+                "working directory must not be empty",
+            ),
+            (
+                "environment",
+                json!(["MISSING_EQUALS"]),
+                io::ErrorKind::InvalidData,
+                "environment override must have the NAME=VALUE form",
+            ),
+            (
+                "environment",
+                json!(["BAD-NAME=value"]),
+                io::ErrorKind::InvalidData,
+                "invalid environment variable name",
+            ),
+            (
+                "unset_environment",
+                json!(["BAD-NAME"]),
+                io::ErrorKind::InvalidData,
+                "invalid environment variable name",
+            ),
+            (
+                "kind",
+                json!("native"),
+                io::ErrorKind::InvalidInput,
+                "--detach and --cwd are only supported by proton profiles",
+            ),
+        ];
+        for (field, value, kind, message) in cases {
+            let mut config: Value = serde_json::from_slice(LEGACY_CONFIG).unwrap();
+            config["profiles"]["trainer"][field] = value;
+            let error = Store::decode(&serde_json::to_vec(&config).unwrap())
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), kind, "{field}");
+            assert!(error.to_string().starts_with(message), "{field}: {error}");
+        }
+
+        let mut config: Value = serde_json::from_slice(LEGACY_CONFIG).unwrap();
+        config["version"] = 2.into();
+        let error = Store::decode(&serde_json::to_vec(&config).unwrap())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "unsupported profile configuration version"
+        );
+
+        let profile = config["profiles"]["trainer"].take();
+        config["version"] = 1.into();
+        config["profiles"] = json!({ "../trainer": profile });
+        let error = Store::decode(&serde_json::to_vec(&config).unwrap())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "profile name may contain only ASCII letters, digits, '_', '-' and '.'"
+        );
     }
 }

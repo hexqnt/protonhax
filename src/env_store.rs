@@ -22,12 +22,12 @@ impl StoredEnv {
     /// Снимает окружение процесса, применяет присваивания из команды запуска и исключает секреты.
     pub fn capture(overrides: &[String]) -> Self {
         let mut vars: BTreeMap<_, _> = env::vars_os()
-            .filter(|(name, _)| should_store(name))
+            .filter(|(name, _)| !is_sensitive_name(name))
             .collect();
 
         for assignment in overrides {
             if let Some((name, value)) = split_env_assignment(assignment)
-                && should_store(OsStr::new(name))
+                && !is_sensitive_name(OsStr::new(name))
             {
                 vars.insert(OsString::from(name), OsString::from(value));
             }
@@ -147,15 +147,6 @@ impl StoredEnv {
         for _ in 0..count {
             let name_len = read_u32(&mut input)? as usize;
             let value_len = read_u32(&mut input)? as usize;
-            if name_len
-                .checked_add(value_len)
-                .is_none_or(|total_len| total_len > input.len())
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "environment entry exceeds the file size",
-                ));
-            }
             let name = read_bytes(&mut input, name_len)?;
             let value = read_bytes(&mut input, value_len)?;
             if name.is_empty() || name.contains(&0) || name.contains(&b'=') || value.contains(&0) {
@@ -174,7 +165,7 @@ impl StoredEnv {
                 ));
             }
             let name = OsStr::from_bytes(name);
-            if !should_store(name) {
+            if is_sensitive_name(name) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "environment file contains a sensitive variable",
@@ -209,10 +200,6 @@ pub(crate) fn is_sensitive_name(name: &OsStr) -> bool {
         name.windows(marker.len())
             .any(|window| window.eq_ignore_ascii_case(marker))
     })
-}
-
-fn should_store(name: &OsStr) -> bool {
-    !is_sensitive_name(name)
 }
 
 fn usize_to_u32(value: usize) -> io::Result<u32> {
@@ -341,6 +328,27 @@ mod tests {
             let mut bytes = Vec::new();
             environment.write_to(&mut bytes).unwrap();
             assert!(StoredEnv::decode(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_and_sensitive_entries_on_load() {
+        for (name, value) in [
+            ("", "value"),
+            ("A\0B", "value"),
+            ("A=B", "value"),
+            ("VALID", "a\0b"),
+            ("github_token", "secret"),
+        ] {
+            let mut bytes = Vec::new();
+            StoredEnv(vec![(name.into(), value.into())])
+                .write_to(&mut bytes)
+                .unwrap();
+            assert_eq!(
+                StoredEnv::decode(&bytes).err().unwrap().kind(),
+                std::io::ErrorKind::InvalidData,
+                "{name:?}={value:?}"
+            );
         }
     }
 

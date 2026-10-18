@@ -30,7 +30,7 @@ impl ProtonInvocation {
             .ok_or(ProtonInvocationError)
     }
 
-    pub fn executable(&self) -> &std::path::Path {
+    pub fn executable(&self) -> &Path {
         &self.executable
     }
 }
@@ -46,7 +46,7 @@ impl fmt::Display for ProtonInvocationError {
 
 fn resolve_executable(argument: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
     let path = Path::new(argument);
-    if path.components().count() > 1 {
+    if path.components().nth(1).is_some() {
         return is_executable_file(path).then(|| path.to_path_buf());
     }
 
@@ -56,19 +56,16 @@ fn resolve_executable(argument: &str, search_path: Option<&OsStr>) -> Option<Pat
         .find(|candidate| is_executable_file(candidate))
 }
 
-fn is_executable_file(path: &std::path::Path) -> bool {
+fn is_executable_file(path: &Path) -> bool {
     fs::metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        process,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{env, fs, os::unix::fs::PermissionsExt};
+
+    use crate::test_support::TestDirectory;
 
     use super::ProtonInvocation;
 
@@ -85,14 +82,8 @@ mod tests {
 
     #[test]
     fn accepts_an_executable_named_proton() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("protonhax-test-{}-{nonce}", process::id()));
-        fs::create_dir(&directory).unwrap();
-        let proton = directory.join("proton");
+        let directory = TestDirectory::new().unwrap();
+        let proton = directory.path().join("proton");
         fs::write(&proton, b"#!/bin/sh\n").unwrap();
         fs::set_permissions(&proton, fs::Permissions::from_mode(0o700)).unwrap();
 
@@ -103,10 +94,39 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.executable(), proton);
         let parsed_from_path =
-            ProtonInvocation::parse(&["proton".to_owned()], Some(directory.as_os_str())).unwrap();
+            ProtonInvocation::parse(&["proton".to_owned()], Some(directory.path().as_os_str()))
+                .unwrap();
         assert_eq!(parsed_from_path.executable(), proton);
+    }
 
-        fs::remove_file(proton).unwrap();
-        fs::remove_dir(directory).unwrap();
+    #[test]
+    fn skips_non_executable_candidates_in_argv_and_search_path() {
+        let directory = TestDirectory::new().unwrap();
+        let blocked = directory.path().join("blocked");
+        let available = directory.path().join("available");
+        fs::create_dir(&blocked).unwrap();
+        fs::create_dir(&available).unwrap();
+        let blocked_proton = blocked.join("proton");
+        fs::write(&blocked_proton, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&blocked_proton, fs::Permissions::from_mode(0o600)).unwrap();
+        let proton = available.join("proton");
+        fs::write(&proton, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&proton, fs::Permissions::from_mode(0o700)).unwrap();
+        let search_path = env::join_paths([&blocked, &available]).unwrap();
+
+        let parsed = ProtonInvocation::parse(
+            &[
+                blocked_proton.to_str().unwrap().to_owned(),
+                "proton".to_owned(),
+                blocked_proton.to_str().unwrap().to_owned(),
+            ],
+            Some(&search_path),
+        )
+        .unwrap();
+        assert_eq!(parsed.executable(), proton);
+
+        assert!(
+            ProtonInvocation::parse(&["proton".to_owned()], Some(blocked.as_os_str())).is_err()
+        );
     }
 }

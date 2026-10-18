@@ -6,6 +6,8 @@ use std::{
     str::FromStr,
 };
 
+use clap::Args;
+
 use crate::shell::{EnvName, EnvOverride};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,9 +66,19 @@ impl fmt::Display for ParseRunCwdError {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Args, Clone, Debug, Default, Eq, PartialEq)]
 pub struct EnvironmentChanges {
+    #[arg(
+        long = "env",
+        value_name = "NAME=VALUE",
+        help = "Override an environment variable (repeatable)"
+    )]
     pub overrides: Vec<EnvOverride>,
+    #[arg(
+        long = "unset-env",
+        value_name = "NAME",
+        help = "Remove an environment variable (repeatable)"
+    )]
     pub removals: Vec<EnvName>,
 }
 
@@ -81,10 +93,17 @@ impl EnvironmentChanges {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Args, Clone, Debug, Default, Eq, PartialEq)]
 pub struct RunOptions {
+    #[arg(long, help = "Run without waiting and disconnect standard streams")]
     pub detach: bool,
+    #[arg(
+        long,
+        value_name = "PATH|exe-dir",
+        help = "Working directory: a path or `exe-dir`"
+    )]
     pub cwd: Option<RunCwd>,
+    #[command(flatten)]
     pub environment: EnvironmentChanges,
 }
 

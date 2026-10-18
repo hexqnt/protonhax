@@ -51,14 +51,15 @@ impl PendingContext {
         let path = app_dir.join(format!(".pending-{identity}-{nonce}"));
         create_private_dir(&path)?;
 
-        if let Err(error) =
-            write_context_files(&path, proton_path, prefix_path, environment, started_at)
-        {
-            let _ = fs::remove_dir_all(&path);
-            return Err(error);
-        }
-
-        Ok(Self { path, app_dir })
+        let pending = Self { path, app_dir };
+        write_context_files(
+            &pending.path,
+            proton_path,
+            prefix_path,
+            environment,
+            started_at,
+        )?;
+        Ok(pending)
     }
 
     pub fn publish(mut self, owner_pid: u32) -> io::Result<PublishedContext> {
@@ -111,6 +112,13 @@ pub fn read_stored_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
         ));
     }
     Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+pub fn read_started_at(context_dir: &Path) -> Option<u64> {
+    fs::read_to_string(context_dir.join(STARTED_AT_FILE))
+        .ok()?
+        .parse()
+        .ok()
 }
 
 fn write_context_files(
@@ -188,28 +196,20 @@ fn sync_directory(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::Path,
-        process::{self, Command},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
     use crate::{
         app_id::AppId,
         env_store::{ENV_FILE, StoredEnv},
+        test_support::TestDirectory,
     };
 
     use super::PendingContext;
 
     #[test]
     fn context_is_published_atomically_and_removed_by_its_guard() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("protonhax-{}-{nonce}", process::id()));
+        let directory = TestDirectory::new().unwrap();
+        let root = directory.path().join("runtime");
         let appid = "1217060".parse::<AppId>().unwrap();
         let environment = StoredEnv::capture(&[]);
         let pending = PendingContext::create(
@@ -250,6 +250,5 @@ mod tests {
         assert!(!app_dir.exists());
         child.kill().unwrap();
         child.wait().unwrap();
-        fs::remove_dir(root).unwrap();
     }
 }

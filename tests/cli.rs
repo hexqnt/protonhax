@@ -1,34 +1,18 @@
 use std::{
-    fs, io,
+    fs,
     os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, Output, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+
+use test_support::TestDirectory;
+
 const BIN: &str = env!("CARGO_BIN_EXE_protonhax");
-
-struct TestDirectory(PathBuf);
-
-impl TestDirectory {
-    fn new() -> io::Result<Self> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("protonhax-cli-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 #[test]
 fn prints_version_with_short_and_long_flags() {
@@ -81,21 +65,21 @@ fn prints_command_specific_examples() {
 #[test]
 fn complete_cli_workflow() {
     let directory = TestDirectory::new().unwrap();
-    let runtime = directory.0.join("run");
-    let config = directory.0.join("config");
-    let home = directory.0.join("home");
-    let compat = directory.0.join("compat");
+    let runtime = directory.path().join("run");
+    let config = directory.path().join("config");
+    let home = directory.path().join("home");
+    let compat = directory.path().join("compat");
     fs::create_dir_all(compat.join("pfx")).unwrap();
     fs::create_dir_all(home.join(".var/app/com.valvesoftware.Steam")).unwrap();
     fs::create_dir(&runtime).unwrap();
     fs::create_dir(&config).unwrap();
 
-    let proton = directory.0.join("proton");
+    let proton = directory.path().join("proton");
     write_executable(
         &proton,
         "#!/bin/sh\nif [ \"${1-}\" = run ]; then shift; fi\nexec \"$@\"\n",
     );
-    let helper = directory.0.join("helper.sh");
+    let helper = directory.path().join("helper.sh");
     write_executable(
         &helper,
         "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$RUN_MARKER\" \"$(pwd)\" \"${REMOVED-unset}\" > \"$RUN_OUTPUT\"\n",
@@ -118,7 +102,7 @@ fn complete_cli_workflow() {
 
     wait_for_context(&runtime, &config, &home, &compat);
     verify_environment_commands(&runtime, &config, &home, &compat);
-    verify_detached_run(&directory.0, &runtime, &config, &home, &compat, &helper);
+    verify_detached_run(directory.path(), &runtime, &config, &home, &compat, &helper);
     verify_profiles(&runtime, &config, &home, &compat);
     verify_doctor_fix(&runtime, &config, &home, &compat);
 
@@ -210,6 +194,9 @@ fn verify_profiles(runtime: &Path, config: &Path, home: &Path, compat: &Path) {
     let profiles = String::from_utf8(profiles.stdout).unwrap();
     assert!(profiles.contains("PROFILE_TOKEN=<redacted>"));
     assert!(!profiles.contains("PROFILE_TOKEN=secret"));
+    let persisted = fs::read_to_string(config.join("protonhax/profiles.json")).unwrap();
+    assert!(persisted.contains("PROFILE_TOKEN=secret"));
+    assert!(!persisted.contains("<redacted>"));
 
     successful(command(runtime, config, home, compat).args(["profile", "remove", "env-check"]));
     let metadata = fs::metadata(config.join("protonhax/profiles.json")).unwrap();

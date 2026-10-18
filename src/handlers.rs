@@ -1,5 +1,4 @@
 use std::{
-    env,
     io::{self, BufWriter, Write},
     os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
@@ -12,26 +11,22 @@ use serde_json::json;
 use crate::{
     app_id::{AppId, TargetSelector},
     cli::sub_usage,
-    context::{
-        ContextDetail, EXE_FILE, PFX_FILE, PendingContext, RunningApp, active_apps,
-        read_stored_path,
-    },
+    context::{ContextDetail, EXE_FILE, PFX_FILE, RunningApp, active_apps, read_stored_path},
     env_store::StoredEnv,
     launch::{EnvironmentChanges, RunOptions, configure_detached},
+    output::print_json,
     profile::{self, ProfileKind, ProfileName},
-    proton::ProtonInvocation,
-    runtime::{format_duration_ago, unix_now_secs},
-    shell::{is_env_assignment, split_env_assignment},
-    steam::{STEAM_APP_ID_ENV, STEAM_COMPAT_DATA_PATH_ENV},
+    runtime::format_duration_ago,
+    steam::STEAM_APP_ID_ENV,
 };
 
-struct TargetApp {
-    appid: AppId,
-    context_dir: PathBuf,
-}
+pub use init::handle_init;
+
+mod init;
 
 struct RunContext {
-    target: TargetApp,
+    appid: AppId,
+    context_dir: PathBuf,
     env: StoredEnv,
 }
 
@@ -43,83 +38,17 @@ impl RunContext {
     ) -> process::Command {
         let mut command = process::Command::new(program);
         self.env.configure(&mut command);
-        command.env(STEAM_APP_ID_ENV, self.target.appid.to_string());
+        command.env(STEAM_APP_ID_ENV, self.appid.to_string());
         changes.apply_to(&mut command);
         command
     }
-}
 
-struct InitCommand {
-    tokens: Vec<String>,
-    cmd_start_index: usize,
-}
-
-impl InitCommand {
-    fn command(&self) -> &[String] {
-        &self.tokens[self.cmd_start_index..]
+    fn proton_command(&self, changes: &EnvironmentChanges) -> io::Result<process::Command> {
+        let executable = read_stored_path(self.context_dir.join(EXE_FILE))?;
+        let mut command = self.command(executable, changes);
+        command.arg("run");
+        Ok(command)
     }
-
-    fn env_assignments(&self) -> &[String] {
-        &self.tokens[..self.cmd_start_index]
-    }
-}
-
-pub fn handle_init(runtime_root: &Path, cmd: Vec<String>, debug: bool) -> io::Result<()> {
-    if cmd.is_empty() {
-        print_subcommand_usage_error("init", "No command specified");
-    }
-
-    let appid = required_app_id();
-    let init_command = parse_init_command(cmd);
-    let real_cmd = init_command.command();
-    let search_path = init_command
-        .env_assignments()
-        .iter()
-        .find_map(|assignment| {
-            split_env_assignment(assignment)
-                .and_then(|(name, value)| (name == "PATH").then_some(std::ffi::OsStr::new(value)))
-        });
-    let proton = ProtonInvocation::parse(real_cmd, search_path)
-        .unwrap_or_else(|error| print_subcommand_usage_error("init", &error.to_string()));
-    let compat_data = required_absolute_env_path(STEAM_COMPAT_DATA_PATH_ENV);
-    let prefix_path = compat_data.join("pfx");
-    let environment = StoredEnv::capture(init_command.env_assignments());
-    let pending = PendingContext::create(
-        runtime_root,
-        appid,
-        proton.executable(),
-        &prefix_path,
-        &environment,
-        unix_now_secs(),
-    )?;
-
-    let mut command = process::Command::new(&real_cmd[0]);
-    command.args(&real_cmd[1..]);
-    for assignment in init_command.env_assignments() {
-        if let Some((name, value)) = split_env_assignment(assignment) {
-            command.env(name, value);
-        }
-    }
-
-    if debug {
-        eprintln!(
-            "{} Executing command (argv): {real_cmd:?}",
-            "DEBUG".bold().cyan()
-        );
-    }
-
-    let mut child = command.spawn()?;
-    let published = match pending.publish(child.id()) {
-        Ok(context) => context,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    let status = child.wait();
-    drop(published);
-    exit_with_status(status?);
 }
 
 pub fn handle_ls(runtime_root: &Path, long: bool, json_output: bool) -> io::Result<()> {
@@ -131,7 +60,7 @@ pub fn handle_ls(runtime_root: &Path, long: bool, json_output: bool) -> io::Resu
     let apps = active_apps(runtime_root, detail)?;
 
     if json_output {
-        return print_ls_json(&apps);
+        return print_json(&apps.iter().map(app_json).collect::<Vec<_>>());
     }
 
     let stdout = io::stdout();
@@ -157,9 +86,8 @@ pub fn handle_run(
     };
 
     let context = prepare_context(runtime_root, selector)?;
-    let exe = read_stored_path(context.target.context_dir.join(EXE_FILE))?;
-    let mut command = context.command(exe, &options.environment);
-    command.arg("run").args(cmd);
+    let mut command = context.proton_command(&options.environment)?;
+    command.args(cmd);
     if let Some(cwd) = &options.cwd {
         cwd.apply_to(&mut command, executable);
     }
@@ -175,15 +103,11 @@ pub fn handle_run(
 
 pub fn handle_cmd(runtime_root: &Path, selector: &TargetSelector) -> io::Result<()> {
     let context = prepare_context(runtime_root, selector)?;
-    let exe = read_stored_path(context.target.context_dir.join(EXE_FILE))?;
-    let pfx = read_stored_path(context.target.context_dir.join(PFX_FILE))?;
+    let mut command = context.proton_command(&EnvironmentChanges::default())?;
+    let pfx = read_stored_path(context.context_dir.join(PFX_FILE))?;
     let cmd_exe = pfx.join("drive_c/windows/system32/cmd.exe");
 
-    let status = context
-        .command(exe, &EnvironmentChanges::default())
-        .arg("run")
-        .arg(cmd_exe)
-        .status()?;
+    let status = command.arg(cmd_exe).status()?;
     exit_with_status(status);
 }
 
@@ -228,10 +152,9 @@ pub fn handle_profile_run(
 }
 
 pub fn handle_env(runtime_root: &Path, selector: &TargetSelector) -> io::Result<()> {
-    let app = resolve_running_app(runtime_root, selector, ContextDetail::Identity)?;
-    let environment = StoredEnv::load(&app.path)?;
+    let context = prepare_context(runtime_root, selector)?;
     let stdout = io::stdout();
-    environment.write_display(stdout.lock())
+    context.env.write_display(stdout.lock())
 }
 
 pub fn handle_info(
@@ -241,10 +164,7 @@ pub fn handle_info(
 ) -> io::Result<()> {
     let app = resolve_running_app(runtime_root, selector, ContextDetail::Full)?;
     if json_output {
-        let stdout = io::stdout();
-        let mut output = stdout.lock();
-        serde_json::to_writer_pretty(&mut output, &app_json(&app)).map_err(io::Error::other)?;
-        return writeln!(output);
+        return print_json(&app_json(&app));
     }
 
     let stdout = io::stdout();
@@ -255,36 +175,14 @@ pub fn handle_info(
     print_app_paths(&mut output, &app)
 }
 
-fn parse_init_command(cmd: Vec<String>) -> InitCommand {
-    // Steam иногда прокидывает %COMMAND% одной shell-строкой.
-    let tokens = if let [command] = cmd.as_slice()
-        && command.contains(char::is_whitespace)
-    {
-        shell_words::split(command).unwrap_or_else(|error| {
-            print_subcommand_usage_error("init", &format!("Failed to parse command: {error}"));
-        })
-    } else {
-        cmd
-    };
-
-    let Some(cmd_start_index) = tokens
-        .iter()
-        .position(|argument| !is_env_assignment(argument))
-    else {
-        print_subcommand_usage_error("init", "No command specified after environment assignments");
-    };
-
-    InitCommand {
-        tokens,
-        cmd_start_index,
-    }
-}
-
 fn prepare_context(runtime_root: &Path, selector: &TargetSelector) -> io::Result<RunContext> {
     let app = resolve_running_app(runtime_root, selector, ContextDetail::Identity)?;
     let env = StoredEnv::load(&app.path)?;
-    let target = to_target_app(app);
-    Ok(RunContext { target, env })
+    Ok(RunContext {
+        appid: app.appid,
+        context_dir: app.path,
+        env,
+    })
 }
 
 fn resolve_running_app(
@@ -307,22 +205,19 @@ fn resolve_running_app(
         TargetSelector::Name(query) => Some(resolve_app_by_name(&apps, query)),
     };
 
-    Ok(index.map_or_else(
-        || {
-            eprintln!(
-                "{} No active context matches the requested target. Start a game through Steam first.",
-                "Error:".bold().red()
-            );
-            process::exit(2);
-        },
-        |index| apps.swap_remove(index),
-    ))
+    let Some(index) = index else {
+        eprintln!(
+            "{} No active context matches the requested target. Start a game through Steam first.",
+            "Error:".bold().red()
+        );
+        process::exit(2);
+    };
+    Ok(apps.swap_remove(index))
 }
 
 fn resolve_app_by_name(apps: &[RunningApp], query: &str) -> usize {
-    let mut matches = apps.iter().enumerate().filter(|app| {
-        app.1
-            .name
+    let mut matches = apps.iter().enumerate().filter(|(_, app)| {
+        app.name
             .as_deref()
             .is_some_and(|name| contains_case_insensitive(name, query))
     });
@@ -347,13 +242,6 @@ fn resolve_app_by_name(apps: &[RunningApp], query: &str) -> usize {
     process::exit(2);
 }
 
-fn to_target_app(app: RunningApp) -> TargetApp {
-    TargetApp {
-        appid: app.appid,
-        context_dir: app.path,
-    }
-}
-
 fn print_ambiguous_matches<'a>(query: &str, matches: impl IntoIterator<Item = &'a RunningApp>) {
     eprintln!(
         "{} Multiple applications match name \"{query}\":",
@@ -364,15 +252,6 @@ fn print_ambiguous_matches<'a>(query: &str, matches: impl IntoIterator<Item = &'
         eprintln!("  {}  {}", app.appid.to_string().green(), name.yellow());
     }
     eprintln!("Specify an appid from `protonhax ls -l`.");
-}
-
-fn print_ls_json(apps: &[RunningApp]) -> io::Result<()> {
-    let data: Vec<_> = apps.iter().map(app_json).collect();
-
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    serde_json::to_writer_pretty(&mut output, &data).map_err(io::Error::other)?;
-    writeln!(output)
 }
 
 fn app_json(app: &RunningApp) -> serde_json::Value {
@@ -411,19 +290,14 @@ fn print_app_header(
 }
 
 fn print_app_paths(output: &mut impl Write, app: &RunningApp) -> io::Result<()> {
-    if let Some(prefix_path) = &app.prefix_path {
-        writeln!(output, "  {} {}", "Prefix:".dimmed(), prefix_path.display())?;
-    }
-    if let Some(install_path) = &app.install_path {
-        writeln!(
-            output,
-            "  {} {}",
-            "Install:".dimmed(),
-            install_path.display()
-        )?;
-    }
-    if let Some(proton_path) = &app.proton_path {
-        writeln!(output, "  {} {}", "Proton:".dimmed(), proton_path.display())?;
+    for (label, path) in [
+        ("Prefix:", &app.prefix_path),
+        ("Install:", &app.install_path),
+        ("Proton:", &app.proton_path),
+    ] {
+        if let Some(path) = path {
+            writeln!(output, "  {} {}", label.dimmed(), path.display())?;
+        }
     }
     Ok(())
 }
@@ -441,26 +315,6 @@ fn contains_ascii_case_insensitive(text: &[u8], query: &[u8]) -> bool {
         || text
             .windows(query.len())
             .any(|window| window.eq_ignore_ascii_case(query))
-}
-
-fn required_app_id() -> AppId {
-    let value = env::var(STEAM_APP_ID_ENV).unwrap_or_else(|_| {
-        print_subcommand_usage_error("init", &format!("{STEAM_APP_ID_ENV} is not set"));
-    });
-    value.parse().unwrap_or_else(|error| {
-        print_subcommand_usage_error("init", &format!("Invalid {STEAM_APP_ID_ENV}: {error}"));
-    })
-}
-
-fn required_absolute_env_path(name: &str) -> PathBuf {
-    let path = env::var_os(name).map_or_else(
-        || print_subcommand_usage_error("init", &format!("{name} is not set")),
-        PathBuf::from,
-    );
-    if !path.is_absolute() {
-        print_subcommand_usage_error("init", &format!("{name} must be an absolute path"));
-    }
-    path
 }
 
 fn print_subcommand_usage_error(subcommand: &str, message: &str) -> ! {
@@ -482,9 +336,70 @@ fn status_code(status: process::ExitStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::{
+        ffi::{OsStr, OsString},
+        fs,
+        os::unix::ffi::{OsStrExt, OsStringExt},
+        path::PathBuf,
+        process::Command,
+    };
 
-    use super::{contains_case_insensitive, status_code};
+    use crate::{
+        context::EXE_FILE, env_store::StoredEnv, launch::EnvironmentChanges,
+        steam::STEAM_APP_ID_ENV, test_support::TestDirectory,
+    };
+
+    use super::{RunContext, contains_case_insensitive, status_code};
+
+    #[test]
+    fn context_applies_appid_before_user_changes_and_removals() {
+        let context = RunContext {
+            appid: "570".parse().unwrap(),
+            context_dir: PathBuf::new(),
+            env: StoredEnv::capture(&[
+                "SteamAppId=1".to_owned(),
+                "PROTONHAX_VALUE=stored".to_owned(),
+            ]),
+        };
+        let command = context.command("native", &EnvironmentChanges::default());
+        assert!(
+            command
+                .get_envs()
+                .any(|entry| entry == (OsStr::new(STEAM_APP_ID_ENV), Some(OsStr::new("570"))))
+        );
+
+        let changes = EnvironmentChanges {
+            overrides: vec![
+                "SteamAppId=2".parse().unwrap(),
+                "PROTONHAX_VALUE=override".parse().unwrap(),
+            ],
+            removals: vec!["SteamAppId".parse().unwrap()],
+        };
+        let command = context.command("native", &changes);
+        assert_eq!(command.get_program(), "native");
+        assert_eq!(command.get_args().count(), 0);
+        assert!(command.get_envs().all(|(name, _)| name != STEAM_APP_ID_ENV));
+        assert!(command.get_envs().any(|entry| {
+            entry == (OsStr::new("PROTONHAX_VALUE"), Some(OsStr::new("override")))
+        }));
+    }
+
+    #[test]
+    fn proton_command_preserves_non_utf8_executable_and_run_verb() {
+        let directory = TestDirectory::new().unwrap();
+        let executable = OsString::from_vec(b"/tools/\xff/proton".to_vec());
+        fs::write(directory.path().join(EXE_FILE), executable.as_bytes()).unwrap();
+        let context = RunContext {
+            appid: "570".parse().unwrap(),
+            context_dir: directory.path().to_owned(),
+            env: StoredEnv::capture(&[]),
+        };
+        let command = context
+            .proton_command(&EnvironmentChanges::default())
+            .unwrap();
+        assert_eq!(command.get_program(), &executable);
+        assert!(command.get_args().eq([OsStr::new("run")]));
+    }
 
     #[test]
     fn case_insensitive_search() {

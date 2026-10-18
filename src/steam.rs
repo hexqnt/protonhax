@@ -22,7 +22,7 @@ struct ManifestInfo {
 }
 
 pub fn resolve_app_meta(environment: &StoredEnv, appid: AppId) -> AppMeta {
-    let Some(compat_data) = environment.get("STEAM_COMPAT_DATA_PATH") else {
+    let Some(compat_data) = environment.get(STEAM_COMPAT_DATA_PATH_ENV) else {
         return AppMeta::default();
     };
 
@@ -91,11 +91,7 @@ fn parse_library_paths(content: &str) -> impl Iterator<Item = &str> {
 fn parse_manifest_info(content: &str) -> ManifestInfo {
     let mut info = ManifestInfo::default();
 
-    for line in content.lines() {
-        let Some((key, value)) = parse_acf_line(line) else {
-            continue;
-        };
-
+    for (key, value) in content.lines().filter_map(parse_acf_line) {
         match key {
             "name" => info.name = Some(value.to_string()),
             "installdir" => info.installdir = Some(value.to_string()),
@@ -112,14 +108,11 @@ fn parse_manifest_info(content: &str) -> ManifestInfo {
 
 fn parse_acf_line(line: &str) -> Option<(&str, &str)> {
     let mut tokens = line
-        .trim()
         .split('"')
         .map(str::trim)
         .filter(|token| !token.is_empty());
 
-    let key = tokens.next()?;
-    let value = tokens.next()?;
-    Some((key, value))
+    Some((tokens.next()?, tokens.next()?))
 }
 
 #[cfg(test)]

@@ -10,7 +10,6 @@ pub enum FlatpakStatus {
     HostInstallation(PathBuf),
     NotDetected,
 }
-
 pub fn detect() -> FlatpakStatus {
     if let Some(app_id) = env::var_os("FLATPAK_ID") {
         let app_id = app_id.to_string_lossy();
@@ -30,15 +29,5 @@ pub fn detect() -> FlatpakStatus {
     match installation {
         Some(path) if path.is_dir() => FlatpakStatus::HostInstallation(path),
         _ => FlatpakStatus::NotDetected,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::STEAM_FLATPAK_ID;
-
-    #[test]
-    fn steam_application_id_is_stable() {
-        assert_eq!(STEAM_FLATPAK_ID, "com.valvesoftware.Steam");
     }
 }

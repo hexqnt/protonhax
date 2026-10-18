@@ -76,16 +76,12 @@ impl fmt::Display for EnvOverride {
     }
 }
 
-pub fn is_env_assignment(s: &str) -> bool {
-    split_env_assignment(s).is_some()
-}
-
 pub fn split_env_assignment(s: &str) -> Option<(&str, &str)> {
     let (name, value) = s.split_once('=')?;
     is_env_name(name).then_some((name, value))
 }
 
-pub fn is_env_name(name: &str) -> bool {
+fn is_env_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'_' | b'A'..=b'Z' | b'a'..=b'z'))
         && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
@@ -93,19 +89,13 @@ pub fn is_env_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvName, EnvOverride, is_env_assignment, split_env_assignment};
-
-    #[test]
-    fn env_assignment_detection() {
-        assert!(is_env_assignment("A=1"));
-        assert!(is_env_assignment("_A1=1"));
-        assert!(!is_env_assignment("1A=1"));
-        assert!(!is_env_assignment("A-B=1"));
-    }
+    use super::{EnvName, EnvOverride, split_env_assignment};
 
     #[test]
     fn env_assignment_split() {
         assert_eq!(split_env_assignment("A=1=2"), Some(("A", "1=2")));
+        assert_eq!(split_env_assignment("_A1=1"), Some(("_A1", "1")));
+        assert_eq!(split_env_assignment("1A=1"), None);
         assert_eq!(split_env_assignment("A-B=1"), None);
     }
 

@@ -1,6 +1,5 @@
 use std::{
-    env, fs,
-    io::{self, Write},
+    env, fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process,
@@ -8,21 +7,23 @@ use std::{
 };
 
 use colored::Colorize;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::{
     app_id::AppId,
     context::{
         ContextDetail, EXE_FILE, PFX_FILE, RepairSummary, RunningApp, all_contexts,
-        read_stored_path, repair_contexts,
+        read_started_at, read_stored_path, repair_contexts,
     },
     env_store::{ENV_FILE, StoredEnv},
     flatpak::{FlatpakStatus, detect as detect_flatpak},
     runtime::format_duration_ago,
-    steam::{STEAM_APP_ID_ENV, STEAM_COMPAT_DATA_PATH_ENV},
+    steam::{STEAM_APP_ID_ENV, STEAM_COMPAT_DATA_PATH_ENV, resolve_app_meta},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum Level {
     Ok,
     Info,
@@ -30,25 +31,10 @@ enum Level {
     Error,
 }
 
-impl Level {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Ok => "ok",
-            Self::Info => "info",
-            Self::Warning => "warning",
-            Self::Error => "error",
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Severity {
-    Warning,
-    Error,
-}
-
+#[derive(Serialize)]
 struct Check {
     section: String,
+    #[serde(rename = "status")]
     level: Level,
     message: String,
 }
@@ -98,16 +84,19 @@ impl Report {
     }
 
     fn warn(&mut self, message: impl Into<String>) {
-        self.warnings += 1;
         self.push(Level::Warning, message.into());
     }
 
     fn error(&mut self, message: impl Into<String>) {
-        self.errors += 1;
         self.push(Level::Error, message.into());
     }
 
     fn push(&mut self, level: Level, message: String) {
+        match level {
+            Level::Warning => self.warnings += 1,
+            Level::Error => self.errors += 1,
+            Level::Ok | Level::Info => {}
+        }
         if let Some(checks) = &mut self.checks {
             checks.push(Check {
                 section: self.section.clone(),
@@ -127,34 +116,15 @@ impl Report {
 
     fn finish(&self, repair: Option<RepairSummary>) -> io::Result<()> {
         if let Some(checks) = &self.checks {
-            let checks: Vec<_> = checks
-                .iter()
-                .map(|check| {
-                    json!({
-                        "section": check.section,
-                        "status": check.level.name(),
-                        "message": check.message,
-                    })
-                })
-                .collect();
-            let fixes = repair.map(|summary| {
-                json!({
-                    "stale_contexts_removed": summary.stale_contexts_removed,
-                    "permissions_fixed": summary.permissions_fixed,
-                })
-            });
             let data = json!({
                 "checks": checks,
-                "fixes": fixes,
+                "fixes": repair,
                 "summary": {
                     "warnings": self.warnings,
                     "errors": self.errors,
                 },
             });
-            let stdout = io::stdout();
-            let mut output = stdout.lock();
-            serde_json::to_writer_pretty(&mut output, &data).map_err(io::Error::other)?;
-            writeln!(output)?;
+            crate::output::print_json(&data)?;
         } else {
             println!(
                 "\nSummary: {} warning(s), {} error(s)",
@@ -254,7 +224,7 @@ fn inspect_runtime(runtime_root: &Path, report: &mut Report) {
 
 fn inspect_contexts(runtime_root: &Path, report: &mut Report) -> io::Result<()> {
     report.section("Contexts");
-    let contexts = all_contexts(runtime_root, ContextDetail::Full)?;
+    let contexts = all_contexts(runtime_root, ContextDetail::Identity)?;
     if contexts.is_empty() {
         report.warn("no contexts found");
         return Ok(());
@@ -271,7 +241,12 @@ fn inspect_contexts(runtime_root: &Path, report: &mut Report) -> io::Result<()> 
 }
 
 fn inspect_context(app: &RunningApp, report: &mut Report) {
-    let title = app.name.as_deref().map_or_else(
+    let environment = StoredEnv::load(&app.path);
+    let name = environment
+        .as_ref()
+        .ok()
+        .and_then(|environment| resolve_app_meta(environment, app.appid).name);
+    let title = name.as_deref().map_or_else(
         || format!("{}, session {}", app.appid, app.session_id),
         |name| format!("{} ({name}), session {}", app.appid, app.session_id),
     );
@@ -284,11 +259,11 @@ fn inspect_context(app: &RunningApp, report: &mut Report) {
     }
 
     inspect_permissions(&app.path, 0o700, report);
-    inspect_file_path(&app.path.join(EXE_FILE), "exe", Severity::Error, report);
-    inspect_file_path(&app.path.join(PFX_FILE), "pfx", Severity::Warning, report);
-    inspect_environment_file(app, report);
+    inspect_file_path(&app.path.join(EXE_FILE), "exe", Level::Error, report);
+    inspect_file_path(&app.path.join(PFX_FILE), "pfx", Level::Warning, report);
+    inspect_environment_file(app, environment, report);
 
-    if let Some(started_at) = app.started_at {
+    if let Some(started_at) = read_started_at(&app.path) {
         report.ok(format!(
             "started_at: {started_at} ({})",
             format_duration_ago(started_at)
@@ -298,8 +273,12 @@ fn inspect_context(app: &RunningApp, report: &mut Report) {
     }
 }
 
-fn inspect_environment_file(app: &RunningApp, report: &mut Report) {
-    match StoredEnv::load(&app.path) {
+fn inspect_environment_file(
+    app: &RunningApp,
+    environment: io::Result<StoredEnv>,
+    report: &mut Report,
+) {
+    match environment {
         Ok(environment) => {
             report.ok("env: environment file is readable");
             inspect_permissions(&app.path.join(ENV_FILE), 0o600, report);
@@ -319,7 +298,7 @@ fn inspect_environment_file(app: &RunningApp, report: &mut Report) {
     }
 }
 
-fn inspect_file_path(stored_path: &Path, label: &str, severity: Severity, report: &mut Report) {
+fn inspect_file_path(stored_path: &Path, label: &str, severity: Level, report: &mut Report) {
     let problem = match read_stored_path(stored_path) {
         Ok(path) if path.exists() => {
             report.ok(format!("{label}: {}", path.display()));
@@ -329,10 +308,7 @@ fn inspect_file_path(stored_path: &Path, label: &str, severity: Severity, report
         Err(error) => format!("{label} file is missing or unreadable: {error}"),
     };
 
-    match severity {
-        Severity::Warning => report.warn(problem),
-        Severity::Error => report.error(problem),
-    }
+    report.push(severity, problem);
 }
 
 fn inspect_permissions(path: &Path, expected: u32, report: &mut Report) {
@@ -347,5 +323,71 @@ fn inspect_permissions(path: &Path, expected: u32, report: &mut Report) {
             "permissions for {} are {actual:o}, expected {expected:o}",
             path.display()
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, process};
+
+    use crate::{context::SessionId, test_support::TestDirectory};
+
+    use super::{Report, inspect_contexts};
+
+    #[test]
+    fn report_records_sections_and_counts_levels() {
+        let mut report = Report::new(true);
+        report.section("Test");
+        report.ok("ok");
+        report.info("info");
+        report.warn("warning");
+        report.error("error");
+
+        assert_eq!((report.warnings, report.errors), (1, 1));
+        let checks = serde_json::to_value(report.checks.unwrap()).unwrap();
+        let checks = checks.as_array().unwrap();
+        assert!(checks.iter().all(|check| check["section"] == "Test"));
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| check["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["ok", "info", "warning", "error"]
+        );
+    }
+
+    #[test]
+    fn incomplete_context_preserves_diagnostic_messages_and_severity() {
+        let directory = TestDirectory::new().unwrap();
+        let root = directory.path();
+        let session = SessionId::for_pid(process::id()).unwrap();
+        let context = root.join("570").join(session.to_string());
+        fs::create_dir_all(&context).unwrap();
+        fs::set_permissions(&context, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(context.join("started_at"), "invalid").unwrap();
+        let mut report = Report::new(true);
+        inspect_contexts(root, &mut report).unwrap();
+
+        assert_eq!((report.warnings, report.errors), (2, 2));
+        let checks = serde_json::to_value(report.checks.unwrap()).unwrap();
+        let checks = checks.as_array().unwrap();
+        assert!(
+            checks
+                .iter()
+                .all(|check| check["section"] == format!("Contexts/570, session {session}"))
+        );
+        for (prefix, status) in [
+            ("exe file is missing or unreadable:", "error"),
+            ("pfx file is missing or unreadable:", "warning"),
+            ("env file is missing or invalid:", "error"),
+            ("started_at is missing or invalid", "warning"),
+        ] {
+            assert!(checks.iter().any(|check| {
+                check["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with(prefix))
+                    && check["status"] == status
+            }));
+        }
     }
 }

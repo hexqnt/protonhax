@@ -1,18 +1,13 @@
-use std::{
-    ffi::OsStr,
-    fmt,
-    io::{self, Write},
-    str::FromStr,
-};
+use std::{fmt, io, str::FromStr};
 
 use clap::ValueEnum;
-use serde_json::json;
 
-use crate::{app_id::TargetSelector, env_store::is_sensitive_name, launch::RunOptions};
+use crate::{app_id::TargetSelector, launch::RunOptions, output::print_json};
 
-use self::store::Store;
+use self::{store::Store, view::ProfileView};
 
 mod store;
+mod view;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ProfileKind {
@@ -147,11 +142,8 @@ pub fn list(json_output: bool) -> io::Result<()> {
             .profiles
             .iter()
             .map(|(name, profile)| profile_json(name, profile))
-            .collect();
-        let stdout = io::stdout();
-        let mut output = stdout.lock();
-        serde_json::to_writer_pretty(&mut output, &profiles).map_err(io::Error::other)?;
-        return writeln!(output);
+            .collect::<io::Result<_>>()?;
+        return print_json(&profiles);
     }
 
     for (name, profile) in store.profiles {
@@ -176,37 +168,11 @@ pub fn resolve(name: &ProfileName, extra_args: &[String]) -> io::Result<Profile>
     Ok(profile)
 }
 
-fn profile_json(name: &ProfileName, profile: &Profile) -> serde_json::Value {
-    let environment: Vec<_> = profile
-        .run_options
-        .environment
-        .overrides
-        .iter()
-        .map(|assignment| {
-            if is_sensitive_name(OsStr::new(assignment.name().as_str())) {
-                format!("{}=<redacted>", assignment.name())
-            } else {
-                assignment.to_string()
-            }
-        })
-        .collect();
-    let unset_environment: Vec<_> = profile
-        .run_options
-        .environment
-        .removals
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    json!({
-        "name": name.as_str(),
-        "target": profile.target.to_string(),
-        "kind": profile.kind.to_string(),
-        "command": profile.command,
-        "detach": profile.run_options.detach,
-        "cwd": profile.run_options.cwd.as_ref().map(ToString::to_string),
-        "environment": environment,
-        "unset_environment": unset_environment,
-    })
+fn profile_json(name: &ProfileName, profile: &Profile) -> io::Result<serde_json::Value> {
+    let mut value =
+        serde_json::to_value(ProfileView::new(profile, true)).map_err(io::Error::other)?;
+    value["name"] = name.as_str().into();
+    Ok(value)
 }
 
 #[cfg(test)]

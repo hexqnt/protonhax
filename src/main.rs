@@ -17,11 +17,14 @@ mod env_store;
 mod flatpak;
 mod handlers;
 mod launch;
+mod output;
 mod profile;
 mod proton;
 mod runtime;
 mod shell;
 mod steam;
+#[cfg(test)]
+mod test_support;
 
 fn main() -> io::Result<()> {
     let debug = debug_enabled();
@@ -49,13 +52,13 @@ fn main() -> io::Result<()> {
             target,
             options,
             cmd,
-        } => handlers::handle_run(&phd, &target, &cmd, &options.into()),
+        } => handlers::handle_run(&phd, &target, &cmd, &options),
         Commands::Cmd { target } => handlers::handle_cmd(&phd, &target),
         Commands::Exec {
             target,
             environment,
             cmd,
-        } => handlers::handle_exec(&phd, &target, &cmd, &environment.into()),
+        } => handlers::handle_exec(&phd, &target, &cmd, &environment),
         Commands::Env { target } => handlers::handle_env(&phd, &target),
         Commands::Info { target, json } => handlers::handle_info(&phd, &target, json),
         Commands::Profile { command } => match command {
@@ -65,10 +68,7 @@ fn main() -> io::Result<()> {
                 kind,
                 options,
                 cmd,
-            } => profile::add(
-                &name,
-                profile::Profile::new(target, kind, cmd, options.into())?,
-            ),
+            } => profile::add(&name, profile::Profile::new(target, kind, cmd, options)?),
             ProfileCommands::Run { name, args } => handlers::handle_profile_run(&phd, &name, &args),
             ProfileCommands::Ls { json } => profile::list(json),
             ProfileCommands::Remove { name } => profile::remove(&name),

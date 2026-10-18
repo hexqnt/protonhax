@@ -1,12 +1,11 @@
 use clap::CommandFactory;
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use clap_complete::shells::Shell as CompleteShell;
 
 use crate::app_id::TargetSelector;
 use crate::{
-    launch::{EnvironmentChanges, RunCwd, RunOptions},
+    launch::{EnvironmentChanges, RunOptions},
     profile::{ProfileKind, ProfileName},
-    shell::{EnvName, EnvOverride},
 };
 
 #[derive(Subcommand)]
@@ -37,7 +36,7 @@ Examples:
         /// Target game: appid, `latest`, or part of game name
         target: TargetSelector,
         #[command(flatten)]
-        options: RunOptionsArgs,
+        options: RunOptions,
         /// The command to run Windows applications with proton
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
@@ -56,7 +55,7 @@ Examples:
         /// Target game: appid, `latest`, or part of game name
         target: TargetSelector,
         #[command(flatten)]
-        environment: EnvironmentArgs,
+        environment: EnvironmentChanges,
         /// The command to execute Linux applications natively without proton prefix
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
@@ -117,7 +116,7 @@ Examples:
         #[arg(long, value_enum, default_value_t = ProfileKind::Proton)]
         kind: ProfileKind,
         #[command(flatten)]
-        options: RunOptionsArgs,
+        options: RunOptions,
         /// Command saved in the profile
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
@@ -147,28 +146,6 @@ Examples:
     },
 }
 
-#[derive(Args)]
-pub struct EnvironmentArgs {
-    /// Override an environment variable (repeatable)
-    #[arg(long = "env", value_name = "NAME=VALUE")]
-    overrides: Vec<EnvOverride>,
-    /// Remove an environment variable (repeatable)
-    #[arg(long = "unset-env", value_name = "NAME")]
-    removals: Vec<EnvName>,
-}
-
-#[derive(Args)]
-pub struct RunOptionsArgs {
-    /// Run without waiting and disconnect standard streams
-    #[arg(long)]
-    detach: bool,
-    /// Working directory: a path or `exe-dir`
-    #[arg(long, value_name = "PATH|exe-dir")]
-    cwd: Option<RunCwd>,
-    #[command(flatten)]
-    environment: EnvironmentArgs,
-}
-
 #[derive(Parser)]
 #[command(
     name = "protonhax",
@@ -194,25 +171,6 @@ pub struct Cli {
     version: Option<bool>,
     #[command(subcommand)]
     pub command: Option<Commands>,
-}
-
-impl From<EnvironmentArgs> for EnvironmentChanges {
-    fn from(args: EnvironmentArgs) -> Self {
-        Self {
-            overrides: args.overrides,
-            removals: args.removals,
-        }
-    }
-}
-
-impl From<RunOptionsArgs> for RunOptions {
-    fn from(args: RunOptionsArgs) -> Self {
-        Self {
-            detach: args.detach,
-            cwd: args.cwd,
-            environment: args.environment.into(),
-        }
-    }
 }
 
 /// Вывод справки для конкретной подкоманды.
